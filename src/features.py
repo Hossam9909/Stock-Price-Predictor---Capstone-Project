@@ -1,620 +1,519 @@
 """
-Stock Price Feature Engineering Module
+Feature Engineering Module - USES existing data.py functions
 
-This module provides functions to create technical indicators, lag features,
-rolling window statistics, and target variables for stock price prediction.
-All functions are designed to avoid lookahead bias for time series modeling.
+This module provides feature engineering capabilities for stock price data.
+It imports and uses existing data.py functions for data loading - NO DATA LOADING CODE HERE.
 
-Author: Capstone Project
-Date: 2024
+Author: Stock Price Indicator Project
+Dependencies: src.data (existing module)
 """
 
-import numpy as np
+from .data import load_raw_data, calculate_returns
 import pandas as pd
-from typing import List, Tuple, Optional, Dict, Any
+import numpy as np
+from typing import List, Dict, Optional, Tuple
 import warnings
+warnings.filterwarnings('ignore')
 
+# Import existing data functions - NO DUPLICATION
 
-def validate_dataframe(df: pd.DataFrame, required_columns: List[str]) -> None:
-    """
-    Validate that DataFrame contains required columns.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame to validate
-    required_columns : List[str]
-        List of required column names
-
-    Raises
-    ------
-    ValueError
-        If required columns are missing from DataFrame
-    """
-    missing_cols = [col for col in required_columns if col not in df.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns: {missing_cols}")
-
-
-def calculate_sma(df: pd.DataFrame, column: str = 'Adj Close',
-                  windows: List[int] = [5, 20, 50]) -> pd.DataFrame:
-    """
-    Calculate Simple Moving Average (SMA) for specified windows.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with stock data
-    column : str, default 'Adj Close'
-        Column name to calculate SMA for
-    windows : List[int], default [5, 20, 50]
-        List of window sizes for SMA calculation
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with SMA columns added
-    """
-    validate_dataframe(df, [column])
-    df = df.copy()
-
-    for window in windows:
-        col_name = f'SMA_{window}'
-        df[col_name] = df[column].rolling(window=window, min_periods=1).mean()
-
-    return df
-
-
-def calculate_ema(df: pd.DataFrame, column: str = 'Adj Close',
-                  windows: List[int] = [12, 26]) -> pd.DataFrame:
-    """
-    Calculate Exponential Moving Average (EMA) for specified windows.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with stock data
-    column : str, default 'Adj Close'
-        Column name to calculate EMA for
-    windows : List[int], default [12, 26]
-        List of window sizes for EMA calculation
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with EMA columns added
-    """
-    validate_dataframe(df, [column])
-    df = df.copy()
-
-    for window in windows:
-        col_name = f'EMA_{window}'
-        df[col_name] = df[column].ewm(span=window, adjust=False).mean()
-
-    return df
-
-
-def calculate_rsi(df: pd.DataFrame, column: str = 'Adj Close',
-                  window: int = 14) -> pd.DataFrame:
-    """
-    Calculate Relative Strength Index (RSI).
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with stock data
-    column : str, default 'Adj Close'
-        Column name to calculate RSI for
-    window : int, default 14
-        Window size for RSI calculation
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with RSI column added
-    """
-    validate_dataframe(df, [column])
-    df = df.copy()
-
-    # Calculate price changes
-    delta = df[column].diff()
-
-    # Separate gains and losses
-    gains = delta.where(delta > 0, 0)
-    losses = -delta.where(delta < 0, 0)
-
-    # Calculate average gains and losses
-    avg_gains = gains.rolling(window=window, min_periods=1).mean()
-    avg_losses = losses.rolling(window=window, min_periods=1).mean()
-
-    # Calculate RSI
-    rs = avg_gains / avg_losses
-    rsi = 100 - (100 / (1 + rs))
-
-    df[f'RSI_{window}'] = rsi
-    return df
-
-
-def calculate_macd(df: pd.DataFrame, column: str = 'Adj Close',
-                   fast_period: int = 12, slow_period: int = 26,
-                   signal_period: int = 9) -> pd.DataFrame:
-    """
-    Calculate MACD (Moving Average Convergence Divergence).
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with stock data
-    column : str, default 'Adj Close'
-        Column name to calculate MACD for
-    fast_period : int, default 12
-        Fast EMA period
-    slow_period : int, default 26
-        Slow EMA period
-    signal_period : int, default 9
-        Signal line EMA period
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with MACD, Signal, and Histogram columns added
-    """
-    validate_dataframe(df, [column])
-    df = df.copy()
-
-    # Calculate fast and slow EMAs
-    ema_fast = df[column].ewm(span=fast_period, adjust=False).mean()
-    ema_slow = df[column].ewm(span=slow_period, adjust=False).mean()
-
-    # Calculate MACD line
-    macd_line = ema_fast - ema_slow
-
-    # Calculate signal line
-    signal_line = macd_line.ewm(span=signal_period, adjust=False).mean()
-
-    # Calculate histogram
-    histogram = macd_line - signal_line
-
-    df['MACD'] = macd_line
-    df['MACD_Signal'] = signal_line
-    df['MACD_Histogram'] = histogram
-
-    return df
-
-
-def calculate_bollinger_bands(df: pd.DataFrame, column: str = 'Adj Close',
-                              window: int = 20, num_std: float = 2.0) -> pd.DataFrame:
-    """
-    Calculate Bollinger Bands.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with stock data
-    column : str, default 'Adj Close'
-        Column name to calculate Bollinger Bands for
-    window : int, default 20
-        Window size for moving average and standard deviation
-    num_std : float, default 2.0
-        Number of standard deviations for bands
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with Bollinger Bands columns added
-    """
-    validate_dataframe(df, [column])
-    df = df.copy()
-
-    # Calculate moving average and standard deviation
-    ma = df[column].rolling(window=window, min_periods=1).mean()
-    std = df[column].rolling(window=window, min_periods=1).std()
-
-    # Calculate bands
-    df[f'BB_Upper_{window}'] = ma + (num_std * std)
-    df[f'BB_Middle_{window}'] = ma
-    df[f'BB_Lower_{window}'] = ma - (num_std * std)
-    df[f'BB_Width_{window}'] = df[f'BB_Upper_{window}'] - \
-        df[f'BB_Lower_{window}']
-    df[f'BB_Percent_{window}'] = (
-        df[column] - df[f'BB_Lower_{window}']) / df[f'BB_Width_{window}']
-
-    return df
-
-
-def calculate_atr(df: pd.DataFrame, high_col: str = 'High',
-                  low_col: str = 'Low', close_col: str = 'Adj Close',
-                  window: int = 14) -> pd.DataFrame:
-    """
-    Calculate Average True Range (ATR).
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with stock data
-    high_col : str, default 'High'
-        Column name for high prices
-    low_col : str, default 'Low'
-        Column name for low prices
-    close_col : str, default 'Adj Close'
-        Column name for close prices
-    window : int, default 14
-        Window size for ATR calculation
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with ATR column added
-    """
-    validate_dataframe(df, [high_col, low_col, close_col])
-    df = df.copy()
-
-    # Calculate True Range components
-    tr1 = df[high_col] - df[low_col]
-    tr2 = abs(df[high_col] - df[close_col].shift(1))
-    tr3 = abs(df[low_col] - df[close_col].shift(1))
-
-    # True Range is the maximum of the three components
-    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-    # Calculate ATR as moving average of True Range
-    df[f'ATR_{window}'] = true_range.rolling(
-        window=window, min_periods=1).mean()
-
-    return df
-
-
-def create_lag_features(df: pd.DataFrame, columns: List[str],
-                        lags: List[int] = [1, 2, 3, 5, 10]) -> pd.DataFrame:
-    """
-    Create lag features for specified columns.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with stock data
-    columns : List[str]
-        List of column names to create lags for
-    lags : List[int], default [1, 2, 3, 5, 10]
-        List of lag periods
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with lag features added
-    """
-    validate_dataframe(df, columns)
-    df = df.copy()
-
-    for column in columns:
-        for lag in lags:
-            col_name = f'{column}_lag_{lag}'
-            df[col_name] = df[column].shift(lag)
-
-    return df
-
-
-def create_rolling_features(df: pd.DataFrame, column: str = 'Adj Close',
-                            windows: List[int] = [5, 10, 20]) -> pd.DataFrame:
-    """
-    Create rolling window statistical features.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with stock data
-    column : str, default 'Adj Close'
-        Column name to calculate rolling features for
-    windows : List[int], default [5, 10, 20]
-        List of window sizes
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with rolling features added
-    """
-    validate_dataframe(df, [column])
-    df = df.copy()
-
-    for window in windows:
-        # Basic rolling statistics
-        df[f'Rolling_Mean_{window}'] = df[column].rolling(
-            window=window, min_periods=1).mean()
-        df[f'Rolling_Std_{window}'] = df[column].rolling(
-            window=window, min_periods=1).std()
-        df[f'Rolling_Min_{window}'] = df[column].rolling(
-            window=window, min_periods=1).min()
-        df[f'Rolling_Max_{window}'] = df[column].rolling(
-            window=window, min_periods=1).max()
-
-        # Higher-order moments
-        df[f'Rolling_Skew_{window}'] = df[column].rolling(
-            window=window, min_periods=1).skew()
-        df[f'Rolling_Kurt_{window}'] = df[column].rolling(
-            window=window, min_periods=1).kurt()
-
-        # Range and volatility measures
-        df[f'Rolling_Range_{window}'] = (df[f'Rolling_Max_{window}'] -
-                                         df[f'Rolling_Min_{window}'])
-        df[f'Rolling_CV_{window}'] = (df[f'Rolling_Std_{window}'] /
-                                      df[f'Rolling_Mean_{window}'])
-
-    return df
-
-
-def create_return_features(df: pd.DataFrame, column: str = 'Adj Close',
-                           periods: List[int] = [1, 5, 10, 20]) -> pd.DataFrame:
-    """
-    Create return features for different periods.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with stock data
-    column : str, default 'Adj Close'
-        Column name to calculate returns for
-    periods : List[int], default [1, 5, 10, 20]
-        List of periods for return calculation
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with return features added
-    """
-    validate_dataframe(df, [column])
-    df = df.copy()
-
-    for period in periods:
-        # Simple returns
-        df[f'Return_{period}d'] = df[column].pct_change(periods=period)
-
-        # Log returns
-        df[f'LogReturn_{period}d'] = np.log(
-            df[column] / df[column].shift(period))
-
-    return df
-
-
-def create_target_variables(df: pd.DataFrame, column: str = 'Adj Close',
-                            horizons: List[int] = [1, 7, 14, 28]) -> pd.DataFrame:
-    """
-    Create target variables for future price prediction.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with stock data
-    column : str, default 'Adj Close'
-        Column name to create targets for
-    horizons : List[int], default [1, 7, 14, 28]
-        List of future horizons in days
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with target variables added
-    """
-    validate_dataframe(df, [column])
-    df = df.copy()
-
-    for horizon in horizons:
-        # Future prices
-        df[f'Target_Price_{horizon}d'] = df[column].shift(-horizon)
-
-        # Future returns
-        df[f'Target_Return_{horizon}d'] = (
-            df[f'Target_Price_{horizon}d'] / df[column]) - 1
-
-        # Future log returns
-        df[f'Target_LogReturn_{horizon}d'] = np.log(
-            df[f'Target_Price_{horizon}d'] / df[column])
-
-        # Price change direction (binary)
-        df[f'Target_Direction_{horizon}d'] = (
-            df[f'Target_Price_{horizon}d'] > df[column]).astype(int)
-
-        # Price change magnitude categories
-        df[f'Target_Change_{horizon}d'] = df[f'Target_Return_{horizon}d']
-
-    return df
+# =============================================================================
+# TECHNICAL INDICATORS (NEW FUNCTIONALITY)
+# =============================================================================
 
 
 def create_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Create all technical indicators in one function.
+    Create technical indicators from OHLCV data.
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with stock data (must have OHLCV columns)
+    Args:
+        df (pd.DataFrame): DataFrame with OHLCV columns
 
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with all technical indicators added
+    Returns:
+        pd.DataFrame: DataFrame with added technical indicators
+
+    Technical Indicators Added:
+        - Simple Moving Averages (SMA_5, SMA_10, SMA_20, SMA_50, SMA_200)
+        - Exponential Moving Averages (EMA_12, EMA_26)
+        - Relative Strength Index (RSI_14)
+        - MACD (MACD, MACD_Signal, MACD_Histogram)
+        - Bollinger Bands (BB_Upper, BB_Middle, BB_Lower, BB_Width)
+        - Average True Range (ATR_14)
+        - Stochastic Oscillator (Stoch_K, Stoch_D)
+        - Williams %R (Williams_R)
+        - Volume indicators (Volume_SMA, Volume_Ratio)
     """
-    required_columns = ['High', 'Low', 'Adj Close', 'Volume']
-    validate_dataframe(df, required_columns)
+    result_df = df.copy()
 
-    df = df.copy()
+    # Simple Moving Averages
+    for period in [5, 10, 20, 50, 200]:
+        result_df[f'SMA_{period}'] = result_df['Close'].rolling(
+            window=period).mean()
 
-    # Technical indicators
-    df = calculate_sma(df)
-    df = calculate_ema(df)
-    df = calculate_rsi(df)
-    df = calculate_macd(df)
-    df = calculate_bollinger_bands(df)
-    df = calculate_atr(df)
+    # Exponential Moving Averages
+    result_df['EMA_12'] = result_df['Close'].ewm(span=12).mean()
+    result_df['EMA_26'] = result_df['Close'].ewm(span=26).mean()
 
-    return df
+    # RSI (Relative Strength Index)
+    result_df['RSI_14'] = _calculate_rsi(result_df['Close'], window=14)
+
+    # MACD
+    macd_data = _calculate_macd(result_df['Close'])
+    result_df['MACD'] = macd_data['MACD']
+    result_df['MACD_Signal'] = macd_data['Signal']
+    result_df['MACD_Histogram'] = macd_data['Histogram']
+
+    # Bollinger Bands
+    bb_data = _calculate_bollinger_bands(result_df['Close'])
+    result_df['BB_Upper'] = bb_data['Upper']
+    result_df['BB_Middle'] = bb_data['Middle']
+    result_df['BB_Lower'] = bb_data['Lower']
+    result_df['BB_Width'] = bb_data['Width']
+
+    # Average True Range
+    result_df['ATR_14'] = _calculate_atr(result_df, window=14)
+
+    # Stochastic Oscillator
+    stoch_data = _calculate_stochastic(result_df)
+    result_df['Stoch_K'] = stoch_data['%K']
+    result_df['Stoch_D'] = stoch_data['%D']
+
+    # Williams %R
+    result_df['Williams_R'] = _calculate_williams_r(result_df)
+
+    # Volume indicators
+    result_df['Volume_SMA_20'] = result_df['Volume'].rolling(window=20).mean()
+    result_df['Volume_Ratio'] = result_df['Volume'] / \
+        result_df['Volume_SMA_20']
+
+    return result_df
+
+
+def _calculate_rsi(prices: pd.Series, window: int = 14) -> pd.Series:
+    """Calculate Relative Strength Index."""
+    delta = prices.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+
+def _calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> Dict[str, pd.Series]:
+    """Calculate MACD indicator."""
+    ema_fast = prices.ewm(span=fast).mean()
+    ema_slow = prices.ewm(span=slow).mean()
+    macd = ema_fast - ema_slow
+    macd_signal = macd.ewm(span=signal).mean()
+    macd_histogram = macd - macd_signal
+
+    return {
+        'MACD': macd,
+        'Signal': macd_signal,
+        'Histogram': macd_histogram
+    }
+
+
+def _calculate_bollinger_bands(prices: pd.Series, window: int = 20, std_dev: int = 2) -> Dict[str, pd.Series]:
+    """Calculate Bollinger Bands."""
+    sma = prices.rolling(window=window).mean()
+    rolling_std = prices.rolling(window=window).std()
+    upper_band = sma + (rolling_std * std_dev)
+    lower_band = sma - (rolling_std * std_dev)
+    width = upper_band - lower_band
+
+    return {
+        'Upper': upper_band,
+        'Middle': sma,
+        'Lower': lower_band,
+        'Width': width
+    }
+
+
+def _calculate_atr(df: pd.DataFrame, window: int = 14) -> pd.Series:
+    """Calculate Average True Range."""
+    high_low = df['High'] - df['Low']
+    high_close = np.abs(df['High'] - df['Close'].shift())
+    low_close = np.abs(df['Low'] - df['Close'].shift())
+
+    true_range = np.maximum(high_low, np.maximum(high_close, low_close))
+    atr = true_range.rolling(window=window).mean()
+    return atr
+
+
+def _calculate_stochastic(df: pd.DataFrame, k_window: int = 14, d_window: int = 3) -> Dict[str, pd.Series]:
+    """Calculate Stochastic Oscillator."""
+    lowest_low = df['Low'].rolling(window=k_window).min()
+    highest_high = df['High'].rolling(window=k_window).max()
+    k_percent = 100 * (df['Close'] - lowest_low) / (highest_high - lowest_low)
+    d_percent = k_percent.rolling(window=d_window).mean()
+
+    return {
+        '%K': k_percent,
+        '%D': d_percent
+    }
+
+
+def _calculate_williams_r(df: pd.DataFrame, window: int = 14) -> pd.Series:
+    """Calculate Williams %R."""
+    highest_high = df['High'].rolling(window=window).max()
+    lowest_low = df['Low'].rolling(window=window).min()
+    williams_r = -100 * \
+        (highest_high - df['Close']) / (highest_high - lowest_low)
+    return williams_r
+
+# =============================================================================
+# LAG FEATURES (NEW FUNCTIONALITY)
+# =============================================================================
+
+
+def create_lag_features(df: pd.DataFrame, lags: List[int], columns: Optional[List[str]] = None) -> pd.DataFrame:
+    """
+    Create lag features for specified columns.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame
+        lags (List[int]): List of lag periods to create
+        columns (List[str], optional): Columns to create lags for. If None, uses ['Close', 'Volume']
+
+    Returns:
+        pd.DataFrame: DataFrame with added lag features
+    """
+    result_df = df.copy()
+
+    if columns is None:
+        columns = ['Close', 'Volume']
+
+    for col in columns:
+        if col in result_df.columns:
+            for lag in lags:
+                result_df[f'{col}_lag_{lag}'] = result_df[col].shift(lag)
+
+    return result_df
+
+
+def create_rolling_features(df: pd.DataFrame, windows: List[int],
+                            columns: Optional[List[str]] = None,
+                            statistics: Optional[List[str]] = None) -> pd.DataFrame:
+    """
+    Create rolling window statistical features.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame
+        windows (List[int]): List of window sizes
+        columns (List[str], optional): Columns to calculate statistics for
+        statistics (List[str], optional): Statistics to calculate ['mean', 'std', 'min', 'max']
+
+    Returns:
+        pd.DataFrame: DataFrame with added rolling features
+    """
+    result_df = df.copy()
+
+    if columns is None:
+        columns = ['Close', 'Volume']
+
+    if statistics is None:
+        statistics = ['mean', 'std', 'min', 'max']
+
+    for col in columns:
+        if col in result_df.columns:
+            for window in windows:
+                for stat in statistics:
+                    if stat == 'mean':
+                        result_df[f'{col}_rolling_{window}_{stat}'] = result_df[col].rolling(
+                            window).mean()
+                    elif stat == 'std':
+                        result_df[f'{col}_rolling_{window}_{stat}'] = result_df[col].rolling(
+                            window).std()
+                    elif stat == 'min':
+                        result_df[f'{col}_rolling_{window}_{stat}'] = result_df[col].rolling(
+                            window).min()
+                    elif stat == 'max':
+                        result_df[f'{col}_rolling_{window}_{stat}'] = result_df[col].rolling(
+                            window).max()
+
+    return result_df
+
+# =============================================================================
+# RETURN FEATURES (NEW FUNCTIONALITY)
+# =============================================================================
+
+
+def create_return_features(df: pd.DataFrame, periods: List[int] = [1, 5, 10, 20]) -> pd.DataFrame:
+    """
+    Create return-based features using existing calculate_returns function.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame with Close prices
+        periods (List[int]): List of periods for return calculation
+
+    Returns:
+        pd.DataFrame: DataFrame with added return features
+    """
+    result_df = df.copy()
+
+    # Use existing calculate_returns function - NO DUPLICATION
+    for period in periods:
+        if period == 1:
+            # Daily returns
+            result_df['Returns_1d'] = calculate_returns(
+                result_df['Close'], method='simple')
+            result_df['Log_Returns_1d'] = calculate_returns(
+                result_df['Close'], method='log')
+        else:
+            # Multi-period returns
+            result_df[f'Returns_{period}d'] = result_df['Close'].pct_change(
+                periods=period)
+            result_df[f'Log_Returns_{period}d'] = np.log(
+                result_df['Close'] / result_df['Close'].shift(period))
+
+    # Volatility features
+    result_df['Volatility_10d'] = result_df['Returns_1d'].rolling(10).std()
+    result_df['Volatility_30d'] = result_df['Returns_1d'].rolling(30).std()
+
+    return result_df
+
+# =============================================================================
+# PRICE FEATURES (NEW FUNCTIONALITY)
+# =============================================================================
+
+
+def create_price_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Create price-based features.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame with OHLC data
+
+    Returns:
+        pd.DataFrame: DataFrame with added price features
+    """
+    result_df = df.copy()
+
+    # Price ratios
+    result_df['High_Low_Ratio'] = result_df['High'] / result_df['Low']
+    result_df['Close_Open_Ratio'] = result_df['Close'] / result_df['Open']
+
+    # Price ranges
+    result_df['Daily_Range'] = result_df['High'] - result_df['Low']
+    result_df['Daily_Range_Pct'] = (
+        result_df['High'] - result_df['Low']) / result_df['Close']
+
+    # Gap features
+    result_df['Gap'] = result_df['Open'] - result_df['Close'].shift(1)
+    result_df['Gap_Pct'] = result_df['Gap'] / result_df['Close'].shift(1)
+
+    # Position within daily range
+    result_df['Close_Position'] = (
+        result_df['Close'] - result_df['Low']) / (result_df['High'] - result_df['Low'])
+
+    return result_df
+
+# =============================================================================
+# VOLUME FEATURES (NEW FUNCTIONALITY)
+# =============================================================================
+
+
+def create_volume_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Create volume-based features.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame with Volume data
+
+    Returns:
+        pd.DataFrame: DataFrame with added volume features
+    """
+    result_df = df.copy()
+
+    # Volume moving averages
+    result_df['Volume_MA_5'] = result_df['Volume'].rolling(5).mean()
+    result_df['Volume_MA_20'] = result_df['Volume'].rolling(20).mean()
+
+    # Volume ratios
+    result_df['Volume_Ratio_5'] = result_df['Volume'] / \
+        result_df['Volume_MA_5']
+    result_df['Volume_Ratio_20'] = result_df['Volume'] / \
+        result_df['Volume_MA_20']
+
+    # Price-Volume features
+    result_df['Price_Volume'] = result_df['Close'] * result_df['Volume']
+    result_df['Volume_Price_Trend'] = result_df['Price_Volume'].rolling(
+        10).mean()
+
+    return result_df
+
+# =============================================================================
+# FEATURE COMBINATION FUNCTIONS (NEW FUNCTIONALITY)
+# =============================================================================
 
 
 def create_all_features(df: pd.DataFrame,
-                        target_horizons: List[int] = [1, 7, 14, 28],
-                        include_volume_features: bool = True) -> pd.DataFrame:
+                        include_technical: bool = True,
+                        include_lags: bool = True,
+                        include_rolling: bool = True,
+                        lag_periods: List[int] = [1, 2, 3, 5],
+                        rolling_windows: List[int] = [5, 10, 20]) -> pd.DataFrame:
     """
-    Create all features including technical indicators, lags, rolling stats, and targets.
+    Create all features in one function call.
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with stock data (must have OHLCV columns)
-    target_horizons : List[int], default [1, 7, 14, 28]
-        List of target prediction horizons
-    include_volume_features : bool, default True
-        Whether to include volume-based features
+    Args:
+        df (pd.DataFrame): Input DataFrame with OHLCV data
+        include_technical (bool): Whether to include technical indicators
+        include_lags (bool): Whether to include lag features
+        include_rolling (bool): Whether to include rolling features
+        lag_periods (List[int]): Lag periods to create
+        rolling_windows (List[int]): Rolling window sizes
 
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with all features and targets added
-
-    Notes
-    -----
-    This function creates a comprehensive feature set for stock price prediction.
-    The resulting DataFrame will have NaN values for the first few rows (due to lags)
-    and last few rows (due to forward-looking targets).
+    Returns:
+        pd.DataFrame: DataFrame with all requested features
     """
-    required_columns = ['High', 'Low', 'Adj Close', 'Volume']
-    validate_dataframe(df, required_columns)
+    result_df = df.copy()
 
-    df = df.copy()
+    # Technical indicators
+    if include_technical:
+        result_df = create_technical_indicators(result_df)
 
-    print("Creating technical indicators...")
-    df = create_technical_indicators(df)
+    # Price features
+    result_df = create_price_features(result_df)
 
-    print("Creating return features...")
-    df = create_return_features(df)
+    # Volume features
+    result_df = create_volume_features(result_df)
 
-    print("Creating lag features...")
-    price_columns = ['Adj Close', 'High', 'Low']
-    if include_volume_features:
-        price_columns.append('Volume')
-    df = create_lag_features(df, price_columns)
+    # Return features
+    result_df = create_return_features(result_df)
 
-    print("Creating rolling features...")
-    df = create_rolling_features(df, 'Adj Close')
-    if include_volume_features:
-        df = create_rolling_features(df, 'Volume')
+    # Lag features
+    if include_lags:
+        result_df = create_lag_features(result_df, lag_periods)
 
-    print("Creating target variables...")
-    df = create_target_variables(df, horizons=target_horizons)
+    # Rolling features
+    if include_rolling:
+        result_df = create_rolling_features(result_df, rolling_windows)
 
-    # Additional derived features
-    print("Creating additional features...")
-
-    # Price relative to moving averages
-    df['Price_to_SMA20'] = df['Adj Close'] / df['SMA_20']
-    df['Price_to_SMA50'] = df['Adj Close'] / df['SMA_50']
-
-    # Volume relative to moving average
-    if include_volume_features:
-        df['Volume_SMA_20'] = df['Volume'].rolling(20).mean()
-        df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA_20']
-
-    # Volatility measures
-    df['Price_Volatility_20'] = df['Adj Close'].pct_change().rolling(20).std()
-    df['High_Low_Ratio'] = df['High'] / df['Low']
-
-    print(f"Feature engineering complete. Shape: {df.shape}")
-    return df
+    return result_df
 
 
-def get_feature_columns(df: pd.DataFrame,
-                        exclude_targets: bool = True,
-                        exclude_original: bool = True) -> List[str]:
+def process_stock_features(ticker: str, data_path: str, **kwargs) -> pd.DataFrame:
     """
-    Get list of feature columns, excluding targets and original OHLCV data.
+    Process features for a single stock using existing load_raw_data function.
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame with features
-    exclude_targets : bool, default True
-        Whether to exclude target columns
-    exclude_original : bool, default True
-        Whether to exclude original OHLCV columns
+    Args:
+        ticker (str): Stock ticker symbol
+        data_path (str): Path to data file
+        **kwargs: Arguments to pass to create_all_features
 
-    Returns
-    -------
-    List[str]
-        List of feature column names
+    Returns:
+        pd.DataFrame: DataFrame with all features for the stock
     """
-    original_cols = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
-    target_cols = [col for col in df.columns if col.startswith('Target_')]
+    # Use existing load_raw_data function - NO DUPLICATION
+    stock_data = load_raw_data(data_path)
 
-    feature_cols = list(df.columns)
+    # Create features
+    features_df = create_all_features(stock_data, **kwargs)
 
-    if exclude_targets:
-        feature_cols = [col for col in feature_cols if col not in target_cols]
+    # Add ticker column for identification
+    features_df['Ticker'] = ticker
 
-    if exclude_original:
-        feature_cols = [
-            col for col in feature_cols if col not in original_cols]
-
-    return feature_cols
+    return features_df
 
 
-def prepare_modeling_data(df: pd.DataFrame,
-                          target_horizon: int = 1,
-                          dropna: bool = True) -> Tuple[pd.DataFrame, pd.Series]:
+def get_feature_importance_groups() -> Dict[str, List[str]]:
     """
-    Prepare data for modeling by selecting features and target for specific horizon.
+    Get predefined feature groups for analysis and model training.
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame with all features and targets
-    target_horizon : int, default 1
-        Target prediction horizon in days
-    dropna : bool, default True
-        Whether to drop rows with NaN values
-
-    Returns
-    -------
-    Tuple[pd.DataFrame, pd.Series]
-        Features DataFrame and target Series
-
-    Raises
-    ------
-    ValueError
-        If target column for specified horizon doesn't exist
+    Returns:
+        Dict[str, List[str]]: Dictionary of feature group names and their features
     """
-    target_col = f'Target_Price_{target_horizon}d'
+    return {
+        'price_features': [
+            'High_Low_Ratio', 'Close_Open_Ratio', 'Daily_Range', 'Daily_Range_Pct',
+            'Gap', 'Gap_Pct', 'Close_Position'
+        ],
+        'technical_indicators': [
+            'SMA_5', 'SMA_10', 'SMA_20', 'SMA_50', 'SMA_200',
+            'EMA_12', 'EMA_26', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Histogram',
+            'BB_Upper', 'BB_Middle', 'BB_Lower', 'BB_Width',
+            'ATR_14', 'Stoch_K', 'Stoch_D', 'Williams_R'
+        ],
+        'volume_features': [
+            'Volume_MA_5', 'Volume_MA_20', 'Volume_Ratio_5', 'Volume_Ratio_20',
+            'Price_Volume', 'Volume_Price_Trend'
+        ],
+        'return_features': [
+            'Returns_1d', 'Log_Returns_1d', 'Returns_5d', 'Returns_10d', 'Returns_20d',
+            'Volatility_10d', 'Volatility_30d'
+        ]
+    }
 
-    if target_col not in df.columns:
-        raise ValueError(f"Target column {target_col} not found. "
-                         f"Available targets: {[col for col in df.columns if col.startswith('Target_')]}")
-
-    feature_cols = get_feature_columns(df)
-
-    X = df[feature_cols].copy()
-    y = df[target_col].copy()
-
-    if dropna:
-        valid_idx = ~(X.isna().any(axis=1) | y.isna())
-        X = X[valid_idx]
-        y = y[valid_idx]
-
-    return X, y
+# =============================================================================
+# UTILITY FUNCTIONS (NEW FUNCTIONALITY)
+# =============================================================================
 
 
-if __name__ == "__main__":
-    # Example usage
-    import yfinance as yf
+def clean_feature_names(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Clean feature column names for better compatibility.
 
-    print("Downloading sample data...")
-    ticker = yf.Ticker("AAPL")
-    df = ticker.history(period="2y")
+    Args:
+        df (pd.DataFrame): DataFrame with feature columns
 
-    print(f"Original data shape: {df.shape}")
+    Returns:
+        pd.DataFrame: DataFrame with cleaned column names
+    """
+    result_df = df.copy()
 
-    # Create all features
-    df_features = create_all_features(df)
+    # Replace special characters and spaces
+    result_df.columns = result_df.columns.str.replace('%', 'Pct')
+    result_df.columns = result_df.columns.str.replace(' ', '_')
+    result_df.columns = result_df.columns.str.replace('-', '_')
 
-    print(f"Data with features shape: {df_features.shape}")
-    print(f"Feature columns: {len(get_feature_columns(df_features))}")
+    return result_df
 
-    # Prepare data for 7-day prediction
-    X, y = prepare_modeling_data(df_features, target_horizon=7)
-    print(f"Modeling data shape: X={X.shape}, y={y.shape}")
+
+def validate_features(df: pd.DataFrame) -> Dict[str, any]:
+    """
+    Validate feature DataFrame for common issues.
+
+    Args:
+        df (pd.DataFrame): DataFrame with features
+
+    Returns:
+        Dict[str, any]: Validation report
+    """
+    report = {
+        'total_features': len(df.columns),
+        'total_rows': len(df),
+        'missing_values': df.isnull().sum().to_dict(),
+        'infinite_values': {},
+        'constant_features': [],
+        'high_correlation_pairs': []
+    }
+
+    # Check for infinite values
+    for col in df.select_dtypes(include=[np.number]).columns:
+        inf_count = np.isinf(df[col]).sum()
+        if inf_count > 0:
+            report['infinite_values'][col] = inf_count
+
+    # Check for constant features
+    for col in df.columns:
+        if df[col].nunique() <= 1:
+            report['constant_features'].append(col)
+
+    # Check for high correlations (only numeric columns)
+    numeric_df = df.select_dtypes(include=[np.number])
+    if len(numeric_df.columns) > 1:
+        corr_matrix = numeric_df.corr()
+        high_corr = []
+        for i in range(len(corr_matrix.columns)):
+            for j in range(i+1, len(corr_matrix.columns)):
+                if abs(corr_matrix.iloc[i, j]) > 0.95:
+                    high_corr.append((
+                        corr_matrix.columns[i],
+                        corr_matrix.columns[j],
+                        corr_matrix.iloc[i, j]
+                    ))
+        report['high_correlation_pairs'] = high_corr
+
+    return report

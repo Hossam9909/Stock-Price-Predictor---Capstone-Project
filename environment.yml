@@ -1,0 +1,48 @@
+# Conda environment file for Stock Price Predictor
+name: stock-predictor
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.9
+  - pip
+  - numpy
+  - pandas
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - jupyterlab
+  - notebook
+  - ipykernel
+  - plotly
+  - pyyaml
+  - joblib
+  - ta-lib
+  - pandas-ta 
+
+  # Machine Learning
+  - lightgbm
+  - xgboost
+
+  # Optional Deep Learning (uncomment if needed)
+  # - pytorch
+  # - tensorflow
+  # - keras
+
+  # Web App
+  - streamlit
+
+  # Development tools
+  - pytest
+  - black
+  - flake8
+  - pre-commit
+
+  
+
+  # Pip packages
+  - pip:
+      - yfinance
+      - mplfinance

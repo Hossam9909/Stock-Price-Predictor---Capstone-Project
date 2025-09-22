@@ -1,0 +1,38 @@
+# Data files
+data/raw/
+data/processed/
+*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv
+.env
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Model artifacts
+experiments/models/
+experiments/results/
+*.pkl
+*.joblib
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

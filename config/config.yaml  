@@ -1,0 +1,112 @@
+# Stock Price Predictor Configuration File
+
+# Data Configuration
+data:
+  tickers:
+    - "AAPL"
+    - "GOOGL" 
+    - "MSFT"
+    - "TSLA"
+    - "AMZN"
+  
+  date_range:
+    start_date: "2020-01-01"
+    end_date: null  # null means current date
+  
+  train_test_split:
+    test_size: 0.2
+    validation_size: 0.1
+
+# Prediction horizons (days)
+horizons: [1, 7, 14, 28]
+
+# Target variable
+target: "Adj Close"
+
+# Feature Engineering
+features:
+  technical_indicators:
+    - "SMA_5"
+    - "SMA_20"
+    - "EMA_12"
+    - "EMA_26"
+    - "RSI_14"
+    - "MACD"
+    - "Bollinger_Bands"
+  
+  lag_features:
+    lags: [1, 2, 3, 5, 10]
+  
+  rolling_features:
+    windows: [5, 10, 20]
+    statistics: ["mean", "std", "min", "max"]
+
+# Model Configuration
+models:
+  baseline:
+    naive_last_value: {}
+    random_forest:
+      n_estimators: 100
+      random_state: 42
+  
+  advanced:
+    lightgbm:
+      objective: "regression"
+      metric: "rmse"
+      boosting_type: "gbdt"
+      num_leaves: 31
+      learning_rate: 0.05
+      feature_fraction: 0.9
+      bagging_fraction: 0.8
+      bagging_freq: 5
+      verbose: 0
+      random_state: 42
+    
+    xgboost:
+      objective: "reg:squarederror"
+      max_depth: 6
+      learning_rate: 0.1
+      n_estimators: 100
+      subsample: 0.8
+      colsample_bytree: 0.8
+      random_state: 42
+
+  deep_learning:
+    lstm:
+      sequence_length: 60
+      hidden_units: 50
+      dropout_rate: 0.2
+      epochs: 100
+      batch_size: 32
+      learning_rate: 0.001
+
+# Evaluation Configuration
+evaluation:
+  metrics:
+    - "RMSE"
+    - "MAE" 
+    - "MAPE"
+    - "directional_accuracy"
+    - "hit_rate_5_percent"
+  
+  walk_forward:
+    initial_train_size: 0.7
+    step_size: 30  # days
+    max_train_size: null  # null means expanding window
+
+# Visualization
+visualization:
+  figsize: [12, 8]
+  style: "seaborn"
+  save_plots: true
+  plot_formats: ["png", "pdf"]
+
+# Paths
+paths:
+  data_raw: "data/raw/"
+  data_processed: "data/processed/"
+  data_external: "data/external/"
+  experiments: "experiments/"
+  models: "experiments/models/"
+  results: "experiments/results/"
+  figures: "experiments/figures/"

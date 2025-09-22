@@ -21,6 +21,60 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from scipy import stats
+import yaml
+
+
+def load_config(config_path: str = "config/config.yaml") -> Dict[str, Any]:
+    """
+    Load configuration from YAML file.
+
+    Args:
+        config_path: Path to configuration file
+
+    Returns:
+        Configuration dictionary
+    """
+    logger = logging.getLogger(__name__)
+
+    try:
+        with open(config_path, 'r') as file:
+            config = yaml.safe_load(file)
+            logger.info(f"Configuration loaded from {config_path}")
+            return config
+    except FileNotFoundError:
+        logger.warning(f"Config file {config_path} not found. Using defaults.")
+        return {
+            'data': {
+                'tickers': ['AAPL', 'GOOGL', 'MSFT', 'TSLA', 'AMZN'],
+                'date_range': {
+                    'start_date': '2020-01-01',
+                    'end_date': None
+                }
+            }
+        }
+    except yaml.YAMLError as e:
+        logger.error(f"Error parsing config file: {e}")
+        return {}
+
+
+def get_default_tickers(config: Dict[str, Any]) -> List[str]:
+    """Get default ticker list from configuration."""
+    return config.get('data', {}).get('tickers', ['AAPL', 'GOOGL', 'MSFT'])
+
+
+def get_default_date_range(config: Dict[str, Any]) -> tuple:
+    """Get default date range from configuration."""
+    try:
+        date_config = config.get('data', {}).get('date_range', {})
+        start_date = date_config.get('start_date', '2020-01-01')
+        end_date = date_config.get('end_date', None)
+
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+
+        return start_date, end_date
+    except:
+        return '2020-01-01', datetime.now().strftime('%Y-%m-%d')
 
 
 def setup_logging():
@@ -155,7 +209,13 @@ def save_raw_data(df: pd.DataFrame, ticker: str, out_dir: str = 'data/raw') -> s
     """
     os.makedirs(out_dir, exist_ok=True)
     filepath = os.path.join(out_dir, f'{ticker}.csv')
-    df.to_csv(filepath)
+
+    # Ensure consistent index naming
+    df_to_save = df.copy()
+    if df_to_save.index.name is None:
+        df_to_save.index.name = 'Date'
+
+    df_to_save.to_csv(filepath)
     return filepath
 
 
@@ -176,6 +236,27 @@ def load_raw_data(filepath: str) -> pd.DataFrame:
         raise FileNotFoundError(f"File not found: {filepath}")
 
     df = pd.read_csv(filepath, index_col=0, parse_dates=True)
+
+    # Ensure consistent index naming
+    df.index.name = "Date"
+
+    # Restore frequency
+    if len(df.index) >= 3:
+        try:
+            inferred_freq = pd.infer_freq(df.index)
+            if inferred_freq:
+                df.index.freq = inferred_freq
+        except Exception:
+            df.index.freq = None
+    elif len(df.index) == 2:
+        delta = df.index[1] - df.index[0]
+        if delta.days == 1:
+            df.index.freq = "D"  # force daily freq for consecutive 2-day case
+        else:
+            df.index.freq = None
+    else:
+        df.index.freq = None
+
     return df
 
 
@@ -206,7 +287,7 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
             df_clean.loc[df_clean[col] <= 0, col] = np.nan
 
     # Forward fill missing values for price data
-    df_clean = df_clean.fillna(method='ffill')
+    df_clean = df_clean.ffill()
 
     # Drop any remaining rows with all NaN values
     df_clean = df_clean.dropna(how='all')
@@ -264,9 +345,9 @@ def handle_missing_data(df: pd.DataFrame, method: str = 'forward_fill') -> pd.Da
     df_imputed = df.copy()
 
     if method == 'forward_fill':
-        df_imputed = df_imputed.fillna(method='ffill')
+        df_imputed = df_imputed.ffill()  # Updated syntax
     elif method == 'backward_fill':
-        df_imputed = df_imputed.fillna(method='bfill')
+        df_imputed = df_imputed.bfill()  # Updated syntax
     elif method == 'interpolate':
         df_imputed = df_imputed.interpolate(method='time')
     elif method == 'mean':
@@ -382,10 +463,18 @@ def align_timestamps(dataframes: List[pd.DataFrame]) -> List[pd.DataFrame]:
     common_start = max(start_dates)
     common_end = min(end_dates)
 
-    # Align all DataFrames to common date range
+    # Create a unified date range using the intersection of all indices
+    all_dates = set(dataframes[0].index)
+    for df in dataframes[1:]:
+        all_dates = all_dates.intersection(set(df.index))
+
+    # Sort the common dates
+    common_dates = sorted(all_dates)
+
+    # Align all DataFrames to common dates
     aligned_dfs = []
     for df in dataframes:
-        aligned_df = df.loc[common_start:common_end].copy()
+        aligned_df = df.loc[common_dates].copy()
         aligned_dfs.append(aligned_df)
 
     return aligned_dfs
@@ -400,7 +489,7 @@ def calculate_returns(prices: pd.Series, method: str = 'simple') -> pd.Series:
         method: Return calculation method ('simple' or 'log')
 
     Returns:
-        Series of returns
+        Series of returns (first value will be NaN)
     """
     if method == 'simple':
         returns = prices.pct_change()
@@ -416,33 +505,52 @@ def main():
     """Main function to handle CLI arguments and execute downloads."""
     logger = setup_logging()
 
+    # Load configuration
+    config = load_config()
+    default_tickers = get_default_tickers(config)
+    default_start, default_end = get_default_date_range(config)
+
     parser = argparse.ArgumentParser(
-        description="Download stock data from Yahoo Finance",
+        description="Download and process stock data from Yahoo Finance",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
         '--tickers',
         nargs='+',
-        required=True,
-        help='Stock ticker symbols (e.g., AAPL GOOGL MSFT)'
+        default=default_tickers,
+        help=f'Stock ticker symbols (default: {default_tickers})'
     )
     parser.add_argument(
         '--start',
-        required=True,
-        help='Start date in YYYY-MM-DD format'
+        default=default_start,
+        help=f'Start date in YYYY-MM-DD format (default: {default_start})'
     )
     parser.add_argument(
         '--end',
-        required=True,
-        help='End date in YYYY-MM-DD format'
+        default=default_end,
+        help=f'End date in YYYY-MM-DD format (default: {default_end})'
     )
     parser.add_argument(
         '--out',
         default='data/raw',
         help='Output directory for CSV files'
     )
+    parser.add_argument(
+        '--config',
+        default='config/config.yaml',
+        help='Path to configuration file'
+    )
+    parser.add_argument(
+        '--validate',
+        action='store_true',
+        help='Run data quality validation after download'
+    )
 
     args = parser.parse_args()
+
+    # Reload config if different path specified
+    if args.config != 'config/config.yaml':
+        config = load_config(args.config)
 
     try:
         results = download_multiple_tickers(
@@ -459,6 +567,16 @@ def main():
             print(f"\nDownloaded files:")
             for file_path in successful_files:
                 print(f"  - {file_path}")
+
+                # Optional data validation
+                if args.validate:
+                    try:
+                        df = load_raw_data(file_path)
+                        is_valid = validate_data_quality(df, detailed=False)
+                        status = "✅ VALID" if is_valid else "⚠️  ISSUES"
+                        print(f"    Data quality: {status}")
+                    except Exception as e:
+                        print(f"    Validation failed: {e}")
         else:
             logger.error("No files were downloaded successfully")
 

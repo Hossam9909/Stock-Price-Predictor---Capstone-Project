@@ -1,9 +1,10 @@
 """
-Stock Data Download Module
+Stock Data Download and Processing Module
 
-This module provides functionality to download stock data from Yahoo Finance
-using yfinance library. It supports downloading multiple tickers and saving
-them as CSV files for further processing.
+This module provides comprehensive functionality for downloading, processing,
+and validating stock data from Yahoo Finance. It includes data cleaning,
+outlier detection, missing value handling, and various utility functions
+for financial data analysis.
 
 Usage:
     python src/data.py --tickers AAPL GOOGL --start 2020-01-01 --end 2023-12-31
@@ -12,10 +13,14 @@ Usage:
 import argparse
 import logging
 import os
-from datetime import datetime
-from typing import List, Optional
-import yfinance as yf
+from datetime import datetime, timedelta
+from typing import List, Optional, Union, Dict, Any
+import warnings
+
+import numpy as np
 import pandas as pd
+import yfinance as yf
+from scipy import stats
 
 
 def setup_logging():
@@ -28,20 +33,23 @@ def setup_logging():
     return logging.getLogger(__name__)
 
 
-def validate_date_format(date_str: str) -> bool:
+def validate_date_format(date_str: Optional[str]) -> bool:
     """
     Validate date string format (YYYY-MM-DD).
 
     Args:
-        date_str (str): Date string to validate
+        date_str: Date string to validate
 
     Returns:
         bool: True if valid, False otherwise
     """
+    if date_str is None or date_str == "":
+        return False
+
     try:
         datetime.strptime(date_str, '%Y-%m-%d')
         return True
-    except ValueError:
+    except (ValueError, TypeError):
         return False
 
 
@@ -50,13 +58,13 @@ def download_ticker(ticker: str, start: str, end: str, out_dir: str = 'data/raw'
     Download stock data for a single ticker and save to CSV.
 
     Args:
-        ticker (str): Stock ticker symbol (e.g., 'AAPL')
-        start (str): Start date in YYYY-MM-DD format
-        end (str): End date in YYYY-MM-DD format
-        out_dir (str): Output directory path
+        ticker: Stock ticker symbol (e.g., 'AAPL')
+        start: Start date in YYYY-MM-DD format
+        end: End date in YYYY-MM-DD format
+        out_dir: Output directory path
 
     Returns:
-        Optional[str]: Path to saved CSV file if successful, None otherwise
+        Path to saved CSV file if successful, None otherwise
     """
     logger = logging.getLogger(__name__)
 
@@ -72,8 +80,10 @@ def download_ticker(ticker: str, start: str, end: str, out_dir: str = 'data/raw'
         # Create output directory
         os.makedirs(out_dir, exist_ok=True)
 
-        # Download data
-        df = yf.download(ticker, start=start, end=end, progress=False)
+        # Download data with error handling
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            df = yf.download(ticker, start=start, end=end, progress=False)
 
         if df.empty:
             logger.warning(f"No data found for ticker {ticker}")
@@ -81,10 +91,13 @@ def download_ticker(ticker: str, start: str, end: str, out_dir: str = 'data/raw'
 
         # Clean and prepare data
         df = df[['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']].copy()
-        df = df.rename(columns={'Adj Close': 'AdjClose'})
 
         # Remove any rows with all NaN values
         df = df.dropna(how='all')
+
+        if df.empty:
+            logger.warning(f"No valid data after cleaning for ticker {ticker}")
+            return None
 
         # Save to CSV
         out_path = os.path.join(out_dir, f'{ticker}.csv')
@@ -98,32 +111,305 @@ def download_ticker(ticker: str, start: str, end: str, out_dir: str = 'data/raw'
         return None
 
 
-def download_multiple_tickers(tickers: List[str], start: str, end: str, out_dir: str = 'data/raw') -> List[str]:
+def download_multiple_tickers(tickers: List[str], start: str, end: str,
+                              out_dir: str = 'data/raw') -> List[Optional[str]]:
     """
     Download stock data for multiple tickers.
 
     Args:
-        tickers (List[str]): List of ticker symbols
-        start (str): Start date in YYYY-MM-DD format
-        end (str): End date in YYYY-MM-DD format
-        out_dir (str): Output directory path
+        tickers: List of ticker symbols
+        start: Start date in YYYY-MM-DD format
+        end: End date in YYYY-MM-DD format
+        out_dir: Output directory path
 
     Returns:
-        List[str]: List of successfully downloaded file paths
+        List of file paths (None for failed downloads)
     """
     logger = logging.getLogger(__name__)
-    successful_downloads = []
+    results = []
 
     logger.info(f"Starting download for {len(tickers)} tickers")
 
     for ticker in tickers:
         result = download_ticker(ticker.upper(), start, end, out_dir)
-        if result:
-            successful_downloads.append(result)
+        results.append(result)
 
+    successful_count = sum(1 for r in results if r is not None)
     logger.info(
-        f"Successfully downloaded {len(successful_downloads)}/{len(tickers)} tickers")
-    return successful_downloads
+        f"Successfully downloaded {successful_count}/{len(tickers)} tickers")
+
+    return results
+
+
+def save_raw_data(df: pd.DataFrame, ticker: str, out_dir: str = 'data/raw') -> str:
+    """
+    Save DataFrame to CSV file.
+
+    Args:
+        df: DataFrame to save
+        ticker: Ticker symbol for filename
+        out_dir: Output directory
+
+    Returns:
+        Path to saved file
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    filepath = os.path.join(out_dir, f'{ticker}.csv')
+    df.to_csv(filepath)
+    return filepath
+
+
+def load_raw_data(filepath: str) -> pd.DataFrame:
+    """
+    Load raw data from CSV file.
+
+    Args:
+        filepath: Path to CSV file
+
+    Returns:
+        DataFrame with date index
+
+    Raises:
+        FileNotFoundError: If file doesn't exist
+    """
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File not found: {filepath}")
+
+    df = pd.read_csv(filepath, index_col=0, parse_dates=True)
+    return df
+
+
+def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Clean stock data by handling various data quality issues.
+
+    Args:
+        df: Raw stock data DataFrame
+
+    Returns:
+        Cleaned DataFrame
+    """
+    logger = logging.getLogger(__name__)
+    df_clean = df.copy()
+
+    # Replace infinite values with NaN
+    df_clean = df_clean.replace([np.inf, -np.inf], np.nan)
+
+    # Handle zero or negative volumes
+    if 'Volume' in df_clean.columns:
+        df_clean.loc[df_clean['Volume'] <= 0, 'Volume'] = np.nan
+
+    # Handle negative prices (should not happen in normal data)
+    price_columns = ['Open', 'High', 'Low', 'Close', 'Adj Close']
+    for col in price_columns:
+        if col in df_clean.columns:
+            df_clean.loc[df_clean[col] <= 0, col] = np.nan
+
+    # Forward fill missing values for price data
+    df_clean = df_clean.fillna(method='ffill')
+
+    # Drop any remaining rows with all NaN values
+    df_clean = df_clean.dropna(how='all')
+
+    # Final validation - drop rows where High < Low (data integrity issue)
+    if 'High' in df_clean.columns and 'Low' in df_clean.columns:
+        invalid_rows = df_clean['High'] < df_clean['Low']
+        if invalid_rows.any():
+            logger.warning(
+                f"Removing {invalid_rows.sum()} rows where High < Low")
+            df_clean = df_clean[~invalid_rows]
+
+    return df_clean
+
+
+def detect_outliers(series: pd.Series, method: str = 'iqr', threshold: float = 3.0) -> pd.Series:
+    """
+    Detect outliers in a pandas Series.
+
+    Args:
+        series: Data series to analyze
+        method: Detection method ('iqr' or 'zscore')
+        threshold: Threshold for outlier detection
+
+    Returns:
+        Boolean series indicating outliers
+    """
+    if method == 'iqr':
+        Q1 = series.quantile(0.25)
+        Q3 = series.quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        return (series < lower_bound) | (series > upper_bound)
+
+    elif method == 'zscore':
+        z_scores = np.abs(stats.zscore(series, nan_policy='omit'))
+        return z_scores > threshold
+
+    else:
+        raise ValueError("Method must be 'iqr' or 'zscore'")
+
+
+def handle_missing_data(df: pd.DataFrame, method: str = 'forward_fill') -> pd.DataFrame:
+    """
+    Handle missing data using various imputation methods.
+
+    Args:
+        df: DataFrame with missing data
+        method: Imputation method ('forward_fill', 'backward_fill', 'interpolate', 'mean', 'drop')
+
+    Returns:
+        DataFrame with missing data handled
+    """
+    df_imputed = df.copy()
+
+    if method == 'forward_fill':
+        df_imputed = df_imputed.fillna(method='ffill')
+    elif method == 'backward_fill':
+        df_imputed = df_imputed.fillna(method='bfill')
+    elif method == 'interpolate':
+        df_imputed = df_imputed.interpolate(method='time')
+    elif method == 'mean':
+        df_imputed = df_imputed.fillna(df_imputed.mean())
+    elif method == 'drop':
+        df_imputed = df_imputed.dropna()
+    else:
+        raise ValueError("Invalid imputation method")
+
+    return df_imputed
+
+
+def validate_data_quality(df: pd.DataFrame, detailed: bool = False) -> Union[bool, Dict[str, Any]]:
+    """
+    Validate data quality with comprehensive checks.
+
+    Args:
+        df: DataFrame to validate
+        detailed: Whether to return detailed validation results
+
+    Returns:
+        Boolean indicating overall quality, or detailed results dict
+    """
+    results = {
+        'overall': True,
+        'issues': [],
+        'high_low_check': True,
+        'volume_check': True,
+        'missing_data_check': True,
+        'price_consistency_check': True
+    }
+
+    # Check High >= Low
+    if 'High' in df.columns and 'Low' in df.columns:
+        high_low_violations = (df['High'] < df['Low']).sum()
+        if high_low_violations > 0:
+            results['high_low_check'] = False
+            results['issues'].append(
+                f"{high_low_violations} rows where High < Low")
+
+    # Check for negative volumes
+    if 'Volume' in df.columns:
+        negative_volumes = (df['Volume'] < 0).sum()
+        if negative_volumes > 0:
+            results['volume_check'] = False
+            results['issues'].append(
+                f"{negative_volumes} rows with negative volume")
+
+    # Check for excessive missing data
+    missing_percentage = df.isnull().sum().sum() / (len(df) * len(df.columns)) * 100
+    if missing_percentage > 10:  # More than 10% missing
+        results['missing_data_check'] = False
+        results['issues'].append(
+            f"High missing data percentage: {missing_percentage:.1f}%")
+
+    # Check price consistency (Open should be reasonable relative to Close)
+    if 'Open' in df.columns and 'Close' in df.columns:
+        price_ratio = df['Open'] / df['Close']
+        extreme_ratios = ((price_ratio > 2) | (price_ratio < 0.5)).sum()
+        if extreme_ratios > 0:
+            results['price_consistency_check'] = False
+            results['issues'].append(
+                f"{extreme_ratios} rows with extreme Open/Close ratios")
+
+    # Overall assessment
+    results['overall'] = all([
+        results['high_low_check'],
+        results['volume_check'],
+        results['missing_data_check'],
+        results['price_consistency_check']
+    ])
+
+    if detailed:
+        return results
+    else:
+        return results['overall']
+
+
+def get_trading_days(start_date: str, end_date: str) -> pd.DatetimeIndex:
+    """
+    Get trading days (business days) between start and end dates.
+
+    Args:
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+
+    Returns:
+        DatetimeIndex of trading days
+    """
+    start = pd.to_datetime(start_date)
+    end = pd.to_datetime(end_date)
+
+    return pd.bdate_range(start=start, end=end)
+
+
+def align_timestamps(dataframes: List[pd.DataFrame]) -> List[pd.DataFrame]:
+    """
+    Align timestamps across multiple DataFrames.
+
+    Args:
+        dataframes: List of DataFrames to align
+
+    Returns:
+        List of aligned DataFrames with common index
+    """
+    if not dataframes:
+        return []
+
+    # Find common date range
+    start_dates = [df.index.min() for df in dataframes]
+    end_dates = [df.index.max() for df in dataframes]
+
+    common_start = max(start_dates)
+    common_end = min(end_dates)
+
+    # Align all DataFrames to common date range
+    aligned_dfs = []
+    for df in dataframes:
+        aligned_df = df.loc[common_start:common_end].copy()
+        aligned_dfs.append(aligned_df)
+
+    return aligned_dfs
+
+
+def calculate_returns(prices: pd.Series, method: str = 'simple') -> pd.Series:
+    """
+    Calculate financial returns from price series.
+
+    Args:
+        prices: Price series (e.g., Adj Close)
+        method: Return calculation method ('simple' or 'log')
+
+    Returns:
+        Series of returns
+    """
+    if method == 'simple':
+        returns = prices.pct_change()
+    elif method == 'log':
+        returns = np.log(prices / prices.shift(1))
+    else:
+        raise ValueError("Method must be 'simple' or 'log'")
+
+    return returns
 
 
 def main():
@@ -159,12 +445,14 @@ def main():
     args = parser.parse_args()
 
     try:
-        successful_files = download_multiple_tickers(
+        results = download_multiple_tickers(
             args.tickers,
             args.start,
             args.end,
             args.out
         )
+
+        successful_files = [r for r in results if r is not None]
 
         if successful_files:
             logger.info("Download completed successfully!")

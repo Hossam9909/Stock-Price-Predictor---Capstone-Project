@@ -8,7 +8,7 @@ Author: Stock Price Indicator Project
 Dependencies: src.data (existing module)
 """
 
-from data import (
+from src.data import (
     calculate_returns,
     clean_data,
     load_raw_data,
@@ -508,3 +508,82 @@ def process_stock_features(
     except Exception as e:
         logger.error(f"Feature processing failed for {ticker}: {e}")
         raise
+
+
+# =============================================================================
+# FEATURE VALIDATION
+# =============================================================================
+
+
+def validate_features(df: pd.DataFrame) -> bool:
+    """
+    Validate the feature DataFrame for NaNs, Infs, and constant columns.
+
+    This function checks for common data quality issues in a feature set that can
+    cause problems during model training.
+
+    Args:
+        df (pd.DataFrame): The DataFrame with features to validate.
+
+    Returns:
+        bool: True if validation passes, False otherwise.
+    """
+    is_valid = True
+    logger.info("--- Starting Feature Validation ---")
+
+    # Check for NaN values
+    if df.isnull().sum().sum() > 0:
+        nan_counts = df.isnull().sum()
+        logger.warning(
+            f"NaN values found! Columns with NaNs:\n{nan_counts[nan_counts > 0]}")
+        is_valid = False
+    else:
+        logger.info("✅ No NaN values found.")
+
+    # Check for infinite values in numeric columns
+    numeric_df = df.select_dtypes(include=np.number)
+    if np.isinf(numeric_df).sum().sum() > 0:
+        inf_counts = np.isinf(numeric_df).sum()
+        logger.warning(
+            f"Infinite values found! Columns with Infs:\n{inf_counts[inf_counts > 0]}")
+        is_valid = False
+    else:
+        logger.info("✅ No infinite values found.")
+
+    if is_valid:
+        logger.info("--- Feature validation successful ---")
+    else:
+        logger.error("--- Feature validation failed ---")
+
+    return is_valid
+
+
+def get_feature_importance_groups(df: pd.DataFrame) -> Dict[str, List[str]]:
+    """
+    Group features by type for importance analysis.
+
+    Args:
+        df (pd.DataFrame): DataFrame with feature columns.
+
+    Returns:
+        Dict[str, List[str]]: A dictionary mapping group names to lists of feature names.
+    """
+    columns = df.columns
+    groups = {
+        "SMA": [c for c in columns if "SMA" in c and "Volume" not in c],
+        "EMA": [c for c in columns if "EMA" in c],
+        "RSI": [c for c in columns if "RSI" in c],
+        "MACD": [c for c in columns if "MACD" in c],
+        "BB": [c for c in columns if "BB_" in c],
+        "Lag": [c for c in columns if "lag" in c],
+        "Rolling": [c for c in columns if "rolling" in c],
+        "Return": [c for c in columns if "Return" in c or "Volatility" in c],
+        "Volume": [c for c in columns if "Volume" in c],
+        "Price": [
+            c
+            for c in columns
+            if c in ["High_Low_Ratio", "Close_Open_Ratio", "Daily_Range", "Gap", "Close_Position"]
+        ],
+    }
+    # Filter out empty groups
+    return {k: v for k, v in groups.items() if v}

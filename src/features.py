@@ -446,7 +446,7 @@ def create_all_features(
 
 
 def apply_configured_features(
-    df: pd.DataFrame, config_path: str = "config/config.yaml"
+    df: pd.DataFrame, config_path: str
 ) -> pd.DataFrame:
     """
     Apply feature engineering using parameters from config.yaml.

@@ -162,6 +162,17 @@ class BasePredictor:
             self.is_fitted = meta.get("is_fitted", self.is_fitted)
             logger.info(f"Loaded model (pickle fallback) from {path}")
 
+    def _prepare_fit_data(self, X: pd.DataFrame, y: pd.Series) -> Tuple[pd.DataFrame, pd.Series]:
+        """
+        Removes rows with NaN targets and returns clean X, y for fitting.
+        """
+        mask = ~y.isna()
+        Xc = X.loc[mask].copy()
+        yc = y.loc[mask].copy()
+        if Xc.empty:
+            raise ValueError("No training rows after dropping NaN targets")
+        return Xc, yc
+
 
 # -----------------------------------------------------------------------------
 # Baseline models
@@ -228,12 +239,8 @@ class RandomForestPredictor(BasePredictor):
         self.model = RandomForestRegressor(**params)
 
     def fit(self, X: pd.DataFrame, y: pd.Series, **fit_kwargs) -> "RandomForestPredictor":
-        mask = ~y.isna()
-        Xc = X.loc[mask].copy()
-        yc = y.loc[mask].copy()
-        if Xc.empty:
-            raise ValueError("No training rows after dropping NaN")
-        self.feature_names = list(Xc.columns)
+        Xc, yc = self._prepare_fit_data(X, y)
+        self.feature_names = list(Xc.columns) # type: ignore
         self.model.fit(Xc.values, yc.values)
         self.is_fitted = True
         logger.info("Trained RandomForest")
@@ -262,12 +269,8 @@ class LightGBMPredictor(BasePredictor):
         self.model = lgb.LGBMRegressor(**params)
 
     def fit(self, X: pd.DataFrame, y: pd.Series, **fit_kwargs) -> "LightGBMPredictor":
-        mask = ~y.isna()
-        Xc = X.loc[mask].copy()
-        yc = y.loc[mask].copy()
-        if Xc.empty:
-            raise ValueError("No training rows after dropping NaN")
-        self.feature_names = list(Xc.columns)
+        Xc, yc = self._prepare_fit_data(X, y)
+        self.feature_names = list(Xc.columns) # type: ignore
         self.model.fit(Xc.values, yc.values, eval_set=[
                        (Xc.values, yc.values)], verbose=False)
         self.is_fitted = True
@@ -292,12 +295,8 @@ class XGBPredictor(BasePredictor):
         self.model = xgb.XGBRegressor(**params)
 
     def fit(self, X: pd.DataFrame, y: pd.Series, **fit_kwargs) -> "XGBPredictor":
-        mask = ~y.isna()
-        Xc = X.loc[mask].copy()
-        yc = y.loc[mask].copy()
-        if Xc.empty:
-            raise ValueError("No training rows after dropping NaN")
-        self.feature_names = list(Xc.columns)
+        Xc, yc = self._prepare_fit_data(X, y)
+        self.feature_names = list(Xc.columns) # type: ignore
         self.model.fit(Xc.values, yc.values, eval_set=[
                        (Xc.values, yc.values)], verbose=False)
         self.is_fitted = True
@@ -612,11 +611,9 @@ def evaluate_with_walk_forward(df: pd.DataFrame,
 
 
 def save_model_records(records: Dict[int, ModelRecord], path: str) -> None:
-    ensure_dir_exists(os.path.dirname(path))
     meta = {h: {"name": r.name, "horizon": r.horizon, "trained": r.trained,
                 "params": r.params} for h, r in records.items()}
-    with open(path, "w") as f:
-        json.dump(meta, f, indent=2)
+    save_results_to_json(meta, path)
     logger.info(f"Saved model records metadata to {path}")
 
 

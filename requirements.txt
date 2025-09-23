@@ -2,6 +2,8 @@ numpy
 pandas
 scikit-learn
 matplotlib
+seaborn
+scipy
 jupyterlab
 yfinance
 lightgbm
@@ -9,3 +11,11 @@ xgboost
 joblib
 streamlit
 pandas-ta
+pyyaml
+plotly
+pytest
+black
+flake8
+isort
+pre-commit
+mypy

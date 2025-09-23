@@ -12,6 +12,7 @@ dependencies:
   - pandas
   - scikit-learn
   - matplotlib
+  - scipy
   - seaborn
   - jupyterlab
   - notebook
@@ -20,7 +21,9 @@ dependencies:
   - pyyaml
   - joblib
   - ta-lib
-  - pandas-ta 
+  - pandas-ta
+  - yfinance
+  - mplfinance
 
   # Machine Learning
   - lightgbm
@@ -38,11 +41,6 @@ dependencies:
   - pytest
   - black
   - flake8
+  - isort
+  - mypy
   - pre-commit
-
-  
-
-  # Pip packages
-  - pip:
-      - yfinance
-      - mplfinance

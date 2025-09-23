@@ -41,7 +41,7 @@ def get_default_date_range(config: Dict[str, Any]) -> tuple:
             end_date = datetime.now().strftime('%Y-%m-%d')
 
         return start_date, end_date
-    except:
+    except (KeyError, AttributeError):
         return '2020-01-01', datetime.now().strftime('%Y-%m-%d')
 
 
@@ -498,17 +498,24 @@ def calculate_returns(prices: pd.Series, method: str = 'simple') -> pd.Series:
 
 def main():
     """Main function to handle CLI arguments and execute downloads."""
-    logger = setup_logging()
-
-    # Load configuration
-    config = load_config()
-    default_tickers = get_default_tickers(config)
-    default_start, default_end = get_default_date_range(config)
-
     parser = argparse.ArgumentParser(
         description="Download and process stock data from Yahoo Finance",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
+    parser.add_argument(
+        '--config',
+        default='config/config.yaml',
+        help='Path to configuration file'
+    )
+    # Parse config argument first to load defaults from it
+    config_arg, other_args = parser.parse_known_args()
+    config = load_config(config_arg.config)
+    setup_logging(config)
+    logger = logging.getLogger(__name__)
+
+    default_tickers = get_default_tickers(config)
+    default_start, default_end = get_default_date_range(config)
+
     parser.add_argument(
         '--tickers',
         nargs='+',
@@ -531,21 +538,13 @@ def main():
         help='Output directory for CSV files'
     )
     parser.add_argument(
-        '--config',
-        default='config/config.yaml',
-        help='Path to configuration file'
-    )
-    parser.add_argument(
         '--validate',
         action='store_true',
         help='Run data quality validation after download'
     )
-
+    # Set defaults from config and then parse all arguments
+    parser.set_defaults(tickers=default_tickers, start=default_start, end=default_end)
     args = parser.parse_args()
-
-    # Reload config if different path specified
-    if args.config != 'config/config.yaml':
-        config = load_config(args.config)
 
     try:
         results = download_multiple_tickers(

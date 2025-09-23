@@ -13,13 +13,14 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
+import seaborn as sns
 from scipy import stats
 import matplotlib.pyplot as plt
 import warnings
 
 # Import project utilities
 from src.data import load_raw_data
-from src.utils import load_config, setup_logging
+from src.utils import load_config, setup_logging, plot_predictions_vs_actual, plot_error_distribution
 
 warnings.filterwarnings("ignore")
 
@@ -717,37 +718,52 @@ def plot_validation_results(validation_results: Dict[str, Any],
             logger.warning("No predictions_df available to plot.")
             return
 
-        fig, axs = plt.subplots(2, 2, figsize=(14, 9))
+        if "date" not in df.columns:
+            df = df.reset_index().rename(columns={'index': 'date'})
+
+        fig, axs = plt.subplots(2, 2, figsize=(15, 10))
         fig.suptitle(title)
 
         # Time series
-        axs[0, 0].plot(df["date"], df["actual"], label="Actual", alpha=0.7)
-        axs[0, 0].plot(df["date"], df["predicted"],
-                       label="Predicted", alpha=0.7)
-        axs[0, 0].set_title("Actual vs Predicted")
+        axs[0, 0].plot(df["date"], df["actual"],
+                       label="Actual", color="blue", alpha=0.8)
+        axs[0, 0].plot(df["date"], df["predicted"], label="Predicted",
+                       color="red", linestyle="--", alpha=0.8)
+        axs[0, 0].set_title("Predictions vs. Actual Over Time")
+        axs[0, 0].set_xlabel("Date")
+        axs[0, 0].set_ylabel("Value")
         axs[0, 0].legend()
-        axs[0, 0].grid(True)
+        axs[0, 0].grid(True, linestyle='--', alpha=0.6)
 
         # Scatter Actual vs Predicted
         axs[0, 1].scatter(df["actual"], df["predicted"], alpha=0.6)
         mn = min(df["actual"].min(), df["predicted"].min())
         mx = max(df["actual"].max(), df["predicted"].max())
-        axs[0, 1].plot([mn, mx], [mn, mx], "r--")
-        axs[0, 1].set_title("Actual vs Predicted (scatter)")
-        axs[0, 1].grid(True)
+        axs[0, 1].plot([mn, mx], [mn, mx], "r--", label="Perfect Prediction")
+        axs[0, 1].set_title("Scatter Plot: Actual vs. Predicted")
+        axs[0, 1].set_xlabel("Actual Values")
+        axs[0, 1].set_ylabel("Predicted Values")
+        axs[0, 1].grid(True, linestyle='--', alpha=0.6)
+        axs[0, 1].legend()
 
         # Residuals over time
         residuals = df["actual"] - df["predicted"]
         axs[1, 0].plot(df["date"], residuals)
         axs[1, 0].axhline(0, color="r", linestyle="--")
         axs[1, 0].set_title("Residuals over time")
+        axs[1, 0].set_xlabel("Date")
+        axs[1, 0].set_ylabel("Error (Actual - Predicted)")
         axs[1, 0].grid(True)
 
         # Residuals histogram
-        axs[1, 1].hist(residuals, bins=30)
-        axs[1, 1].axvline(0, color="r", linestyle="--")
-        axs[1, 1].set_title("Residuals distribution")
-        axs[1, 1].grid(True)
+        sns.histplot(residuals, bins=50, kde=True, ax=axs[1, 1])
+        axs[1, 1].axvline(residuals.mean(), color='r',
+                          linestyle='--', label=f'Mean: {residuals.mean():.2f}')
+        axs[1, 1].set_title("Distribution of Residuals")
+        axs[1, 1].set_xlabel("Prediction Error")
+        axs[1, 1].set_ylabel("Frequency")
+        axs[1, 1].legend()
+        axs[1, 1].grid(True, linestyle='--', alpha=0.6)
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         if save_path:

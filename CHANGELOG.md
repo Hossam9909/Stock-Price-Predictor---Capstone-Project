@@ -7,20 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Initial project structure
-- Configuration files for model parameters
-- Data ingestion pipeline
-- Feature engineering module
-- Baseline models implementation
-- Advanced ML models (LightGBM, XGBoost)
-- Deep learning models (LSTM/GRU)
-- Evaluation framework with walk-forward validation
-- Streamlit web application
-- Comprehensive logging system
-- Testing framework
-- Documentation and reports
-
 ### Changed
 
 ### Deprecated
@@ -31,15 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-## [0.1.0] - YYYY-MM-DD
+## [0.1.0] - 2024-05-24
 
 ### Added
-- Initial release
-- Basic stock price prediction functionality
-- Data pipeline for Yahoo Finance data
-- Multiple prediction horizons (1, 7, 14, 28 days)
-- Model evaluation metrics (RMSE, MAE, MAPE, directional accuracy)
-- Jupyter notebooks for exploratory analysis
-- Technical indicators integration
-- Walk-forward validation
-- Model comparison framework
+- Complete project structure with modular `src`, `tests`, and `scripts`.
+- Configuration-driven pipelines (`config/config.yaml`).
+- Data ingestion and cleaning module (`src/data.py`).
+- Comprehensive feature engineering module (`src/features.py`).
+- Baseline (Naive, Random Walk) and advanced (RF, LGBM, XGB) models (`src/models.py`).
+- Robust evaluation module with walk-forward validation (`src/evaluate.py`).
+- Interactive Streamlit web application (`app/app.py`).
+- Automation via `Makefile.mk` and `scripts/run_pipeline.py`.
+- Full testing suite for core modules.
+- Code quality enforcement with `pre-commit`, `black`, `flake8`, and `mypy`.

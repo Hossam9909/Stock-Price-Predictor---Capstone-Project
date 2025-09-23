@@ -1,906 +1,694 @@
 """
-Stock Price Prediction Models Module
+src/models.py
 
-This module provides comprehensive functionality for training, evaluating, and
-predicting stock prices using various machine learning models. It includes
-baseline models, advanced ensemble methods, and proper time series validation.
+Machine Learning Models for Stock Price Prediction
+- Integrates with src.data, src.features and src.evaluate (no duplicated feature/validation code)
+- Baselines: Naive last-value, RandomWalk (drift)
+- Tree ensembles: RandomForest, LightGBM, XGBoost (if installed)
+- Optional: simple LSTM (if TensorFlow/Keras installed)
+- Model train/predict utilities, hyperparameter tuning, save/load, multi-horizon support
+- Uses evaluate.walk_forward_validation for validation integration
 
-Usage:
-    python src/models.py --ticker AAPL --horizon 7 --model lightgbm
+Author: Stock Price Predictor Project
 """
 
-import argparse
-import logging
+from __future__ import annotations
+
 import os
-import pickle
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Union, Any
+import json
+import joblib
 import warnings
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from sklearn.base import RegressorMixin
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, mean_absolute_error
-from sklearn.model_selection import TimeSeriesSplit
-import lightgbm as lgb
-import xgboost as xgb
-import joblib
+from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 
-# Import existing data utilities - DO NOT recreate these functions
+# Optional libs
+try:
+    import lightgbm as lgb  # type: ignore
+except Exception:
+    lgb = None
+
+try:
+    import xgboost as xgb  # type: ignore
+except Exception:
+    xgb = None
+
+# Optional Keras / TensorFlow for LSTM
+try:
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import Dense, LSTM, Dropout
+    from tensorflow.keras.callbacks import EarlyStopping
+    from tensorflow.keras.models import load_model as keras_load_model
+    keras_available = True
+except Exception:
+    keras_available = False
+
+# Project imports (use existing functions)
 from src.data import (
-    load_raw_data, clean_data, load_config, setup_logging,
-    validate_data_quality, calculate_returns, align_timestamps
+    load_raw_data,
+    clean_data,
+    load_config,
+    setup_logging,
+    validate_data_quality,
+    calculate_returns,
+    align_timestamps,
 )
+from src.features import (
+    create_all_features,
+    create_targets,
+    apply_configured_features,
+)
+from src.evaluate import (
+    walk_forward_validation,
+    time_series_cross_validation,
+    evaluate_regression_model,
+)
+
+warnings.filterwarnings("ignore")
+logger = setup_logging()
+
+# -----------------------------------------------------------------------------
+# Dataclasses & Utilities
+# -----------------------------------------------------------------------------
+
+
+@dataclass
+class ModelRecord:
+    """Holds trained model + metadata."""
+    name: str
+    model: Any
+    horizon: int
+    feature_columns: List[str]
+    trained: bool
+    params: Dict[str, Any]
+
+
+def _ensure_dir(path: str) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+
+# -----------------------------------------------------------------------------
+# Base Predictor (shared API)
+# -----------------------------------------------------------------------------
 
 
 class BasePredictor:
-    """Base class for all stock price predictors."""
+    """Abstract base predictor class defining the interface."""
 
-    def __init__(self, horizon: int = 1, target_col: str = 'Adj Close'):
-        """
-        Initialize base predictor.
-
-        Args:
-            horizon: Prediction horizon in days
-            target_col: Target column to predict
-        """
+    def __init__(self, horizon: int = 1, target_col: str = "Adj Close") -> None:
         self.horizon = horizon
         self.target_col = target_col
-        self.model = None
-        self.is_fitted = False
-        self.feature_names = None
-        self.scaler = None
+        self.model: Optional[Any] = None
+        self.feature_names: Optional[List[str]] = None
+        self.is_fitted: bool = False
 
     def create_targets(self, df: pd.DataFrame) -> pd.Series:
-        """
-        Create target variable for given horizon.
-
-        Args:
-            df: Input DataFrame with price data
-
-        Returns:
-            Series with future prices (shifted backward)
-        """
+        """Create target column (future price) for this horizon."""
         return df[self.target_col].shift(-self.horizon)
 
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> 'BasePredictor':
-        """Fit the model. To be implemented by subclasses."""
-        raise NotImplementedError("Subclasses must implement fit method")
+    def fit(self, X: pd.DataFrame, y: pd.Series, **fit_kwargs) -> "BasePredictor":
+        """Fit model. Must be implemented by subclass."""
+        raise NotImplementedError
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Make predictions. To be implemented by subclasses."""
-        raise NotImplementedError("Subclasses must implement predict method")
+        """Predict. Must be implemented by subclass."""
+        raise NotImplementedError
 
-    def save_model(self, filepath: str) -> None:
-        """Save trained model to file."""
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        joblib.dump({
-            'model': self.model,
-            'horizon': self.horizon,
-            'target_col': self.target_col,
-            'feature_names': self.feature_names,
-            'is_fitted': self.is_fitted
-        }, filepath)
-
-    def load_model(self, filepath: str) -> None:
-        """Load trained model from file."""
-        model_data = joblib.load(filepath)
-        self.model = model_data['model']
-        self.horizon = model_data['horizon']
-        self.target_col = model_data['target_col']
-        self.feature_names = model_data['feature_names']
-        self.is_fitted = model_data['is_fitted']
-
-
-class NaivePredictor(BasePredictor):
-    """Naive predictor that uses last known value."""
-
-    def __init__(self, horizon: int = 1, target_col: str = 'Adj Close'):
-        super().__init__(horizon, target_col)
-        self.last_value = None
-
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> 'NaivePredictor':
-        """
-        Fit naive predictor (just stores last value).
-
-        Args:
-            X: Feature DataFrame (not used for naive prediction)
-            y: Target series
-
-        Returns:
-            Self for method chaining
-        """
-        self.last_value = y.dropna().iloc[-1]
-        self.is_fitted = True
-        return self
-
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """
-        Make predictions using last known value.
-
-        Args:
-            X: Feature DataFrame
-
-        Returns:
-            Array of predictions (all equal to last value)
-        """
-        if not self.is_fitted:
-            raise ValueError("Model must be fitted before making predictions")
-        return np.full(len(X), self.last_value)
-
-
-class RandomWalkPredictor(BasePredictor):
-    """Random walk predictor with drift."""
-
-    def __init__(self, horizon: int = 1, target_col: str = 'Adj Close'):
-        super().__init__(horizon, target_col)
-        self.drift = 0
-        self.last_value = None
-
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> 'RandomWalkPredictor':
-        """
-        Fit random walk model by calculating average drift.
-
-        Args:
-            X: Feature DataFrame (contains price data)
-            y: Target series
-
-        Returns:
-            Self for method chaining
-        """
-        # Calculate daily returns using existing utility
-        if self.target_col in X.columns:
-            returns = calculate_returns(X[self.target_col], method='simple')
-            self.drift = returns.mean()
-        else:
-            self.drift = 0
-
-        self.last_value = y.dropna().iloc[-1]
-        self.is_fitted = True
-        return self
-
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Make predictions using random walk with drift."""
-        if not self.is_fitted:
-            raise ValueError("Model must be fitted before making predictions")
-
-        # Predict: current_price * (1 + drift)^horizon
-        predictions = self.last_value * ((1 + self.drift) ** self.horizon)
-        return np.full(len(X), predictions)
-
-
-class RFPredictor(BasePredictor):
-    """Random Forest predictor for stock prices."""
-
-    def __init__(self, horizon: int = 1, target_col: str = 'Adj Close', **rf_params):
-        super().__init__(horizon, target_col)
-
-        # Default Random Forest parameters
-        default_params = {
-            'n_estimators': 100,
-            'max_depth': None,
-            'min_samples_split': 2,
-            'min_samples_leaf': 1,
-            'random_state': 42,
-            'n_jobs': -1
+    def save_model(self, path: str) -> None:
+        """Persist model to disk (joblib/pickle)."""
+        _ensure_dir(path)
+        payload = {
+            "horizon": self.horizon,
+            "target_col": self.target_col,
+            "feature_names": self.feature_names,
+            "is_fitted": self.is_fitted,
+            "model_type": self.__class__.__name__,
         }
-        default_params.update(rf_params)
+        # Save model object separately for reliability
+        try:
+            joblib.dump({"meta": payload, "model": self.model}, path)
+            logger.info(f"Saved model to {path}")
+        except Exception:
+            # fallback pickle
+            import pickle
+            with open(path, "wb") as f:
+                pickle.dump({"meta": payload, "model": self.model}, f)
+            logger.info(f"Saved model (pickle fallback) to {path}")
 
-        self.model = RandomForestRegressor(**default_params)
+    def load_model(self, path: str) -> None:
+        """Load model from disk."""
+        try:
+            obj = joblib.load(path)
+            self.model = obj.get("model")
+            meta = obj.get("meta", {})
+            self.horizon = meta.get("horizon", self.horizon)
+            self.target_col = meta.get("target_col", self.target_col)
+            self.feature_names = meta.get("feature_names", self.feature_names)
+            self.is_fitted = meta.get("is_fitted", self.is_fitted)
+            logger.info(f"Loaded model from {path}")
+        except Exception:
+            import pickle
+            with open(path, "rb") as f:
+                obj = pickle.load(f)
+            self.model = obj.get("model")
+            meta = obj.get("meta", {})
+            self.horizon = meta.get("horizon", self.horizon)
+            self.target_col = meta.get("target_col", self.target_col)
+            self.feature_names = meta.get("feature_names", self.feature_names)
+            self.is_fitted = meta.get("is_fitted", self.is_fitted)
+            logger.info(f"Loaded model (pickle fallback) from {path}")
 
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> 'RFPredictor':
-        """
-        Fit Random Forest model.
 
-        Args:
-            X: Feature DataFrame
-            y: Target series
+# -----------------------------------------------------------------------------
+# Baseline models
+# -----------------------------------------------------------------------------
 
-        Returns:
-            Self for method chaining
-        """
-        # Remove rows where target is NaN
-        valid_mask = ~y.isna()
-        X_clean = X[valid_mask].copy()
-        y_clean = y[valid_mask].copy()
 
-        # Store feature names
-        self.feature_names = list(X_clean.columns)
+class NaiveLastValue(BasePredictor):
+    """Predicts last observed target value for all future rows."""
 
-        # Fit model
-        self.model.fit(X_clean, y_clean)
+    def fit(self, X: pd.DataFrame, y: pd.Series, **kwargs) -> "NaiveLastValue":
+        y_nonnull = y.dropna()
+        if y_nonnull.empty:
+            raise ValueError("No non-null targets to fit NaiveLastValue")
+        self.last_value = float(y_nonnull.iloc[-1])
         self.is_fitted = True
-
+        logger.info("Fitted NaiveLastValue baseline")
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Make predictions using Random Forest."""
-        if not self.is_fitted:
-            raise ValueError("Model must be fitted before making predictions")
-
-        return self.model.predict(X)
-
-    def get_feature_importance(self) -> pd.Series:
-        """Get feature importance scores."""
-        if not self.is_fitted:
-            raise ValueError("Model must be fitted to get feature importance")
-
-        importance_dict = dict(
-            zip(self.feature_names, self.model.feature_importances_))
-        return pd.Series(importance_dict).sort_values(ascending=False)
+        if not getattr(self, "is_fitted", False):
+            raise ValueError("Model not fitted")
+        return np.full(len(X), self.last_value, dtype=float)
 
 
-class LGBMPredictor(BasePredictor):
-    """LightGBM predictor for stock prices."""
+class RandomWalkDrift(BasePredictor):
+    """Random walk with estimated drift from historical returns."""
 
-    def __init__(self, horizon: int = 1, target_col: str = 'Adj Close', **lgb_params):
-        super().__init__(horizon, target_col)
-
-        # Default LightGBM parameters
-        default_params = {
-            'objective': 'regression',
-            'metric': 'rmse',
-            'boosting_type': 'gbdt',
-            'num_leaves': 31,
-            'learning_rate': 0.05,
-            'feature_fraction': 0.9,
-            'bagging_fraction': 0.8,
-            'bagging_freq': 5,
-            'verbose': -1,
-            'random_state': 42
-        }
-        default_params.update(lgb_params)
-
-        self.params = default_params
-        self.model = None
-
-    def fit(self, X: pd.DataFrame, y: pd.Series,
-            num_boost_round: int = 1000, early_stopping_rounds: int = 50) -> 'LGBMPredictor':
-        """
-        Fit LightGBM model with early stopping.
-
-        Args:
-            X: Feature DataFrame
-            y: Target series
-            num_boost_round: Maximum number of boosting rounds
-            early_stopping_rounds: Early stopping patience
-
-        Returns:
-            Self for method chaining
-        """
-        # Remove rows where target is NaN
-        valid_mask = ~y.isna()
-        X_clean = X[valid_mask].copy()
-        y_clean = y[valid_mask].copy()
-
-        # Store feature names
-        self.feature_names = list(X_clean.columns)
-
-        # Create train/validation split for early stopping
-        split_idx = int(len(X_clean) * 0.8)
-
-        X_train, X_val = X_clean.iloc[:split_idx], X_clean.iloc[split_idx:]
-        y_train, y_val = y_clean.iloc[:split_idx], y_clean.iloc[split_idx:]
-
-        # Create LightGBM datasets
-        train_data = lgb.Dataset(X_train, label=y_train)
-        valid_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
-
-        # Train model
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            self.model = lgb.train(
-                self.params,
-                train_data,
-                num_boost_round=num_boost_round,
-                valid_sets=[valid_data],
-                early_stopping_rounds=early_stopping_rounds,
-                verbose_eval=False
-            )
-
+    def fit(self, X: pd.DataFrame, y: pd.Series, price_col: str = "Adj Close", **kwargs) -> "RandomWalkDrift":
+        # compute returns from price column in X or y (prefer X if contains price)
+        source = X[price_col] if price_col in X.columns else y
+        returns = calculate_returns(pd.Series(source))
+        self.drift = float(
+            returns.mean()) if not returns.dropna().empty else 0.0
+        # last observed value from y
+        y_nonnull = y.dropna()
+        if y_nonnull.empty:
+            raise ValueError("No non-null targets to fit RandomWalkDrift")
+        self.last_value = float(y_nonnull.iloc[-1])
         self.is_fitted = True
+        logger.info(f"Fitted RandomWalkDrift with drift={self.drift:.6f}")
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Make predictions using LightGBM."""
+        if not getattr(self, "is_fitted", False):
+            raise ValueError("Model not fitted")
+        # project last value forward using drift compounded by horizon
+        val = float(self.last_value) * \
+            ((1.0 + float(self.drift)) ** self.horizon)
+        return np.full(len(X), val, dtype=float)
+
+
+# -----------------------------------------------------------------------------
+# Tree-based models
+# -----------------------------------------------------------------------------
+
+
+class RandomForestPredictor(BasePredictor):
+    """RandomForestRegressor wrapper."""
+
+    def __init__(self, horizon: int = 1, target_col: str = "Adj Close", rf_params: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(horizon=horizon, target_col=target_col)
+        params = rf_params or {"n_estimators": 200,
+                               "n_jobs": -1, "random_state": 42}
+        self.model = RandomForestRegressor(**params)
+
+    def fit(self, X: pd.DataFrame, y: pd.Series, **fit_kwargs) -> "RandomForestPredictor":
+        mask = ~y.isna()
+        Xc = X.loc[mask].copy()
+        yc = y.loc[mask].copy()
+        if Xc.empty:
+            raise ValueError("No training rows after dropping NaN")
+        self.feature_names = list(Xc.columns)
+        self.model.fit(Xc.values, yc.values)
+        self.is_fitted = True
+        logger.info("Trained RandomForest")
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
         if not self.is_fitted:
-            raise ValueError("Model must be fitted before making predictions")
+            raise ValueError("Model not fitted")
+        return self.model.predict(X.values)
 
-        return self.model.predict(X, num_iteration=self.model.best_iteration)
-
-    def get_feature_importance(self) -> pd.Series:
-        """Get feature importance scores."""
+    def feature_importances(self) -> pd.Series:
         if not self.is_fitted:
-            raise ValueError("Model must be fitted to get feature importance")
+            raise ValueError("Model not fitted")
+        return pd.Series(self.model.feature_importances_, index=self.feature_names).sort_values(ascending=False)
 
-        importance_dict = dict(
-            zip(self.feature_names, self.model.feature_importance()))
-        return pd.Series(importance_dict).sort_values(ascending=False)
+
+class LightGBMPredictor(BasePredictor):
+    """LightGBM wrapper using sklearn API (LGBMRegressor)."""
+
+    def __init__(self, horizon: int = 1, target_col: str = "Adj Close", lgb_params: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(horizon=horizon, target_col=target_col)
+        if lgb is None:
+            raise ImportError("lightgbm not installed")
+        params = lgb_params or {"n_estimators": 500,
+                                "learning_rate": 0.05, "random_state": 42}
+        self.model = lgb.LGBMRegressor(**params)
+
+    def fit(self, X: pd.DataFrame, y: pd.Series, **fit_kwargs) -> "LightGBMPredictor":
+        mask = ~y.isna()
+        Xc = X.loc[mask].copy()
+        yc = y.loc[mask].copy()
+        if Xc.empty:
+            raise ValueError("No training rows after dropping NaN")
+        self.feature_names = list(Xc.columns)
+        self.model.fit(Xc.values, yc.values, eval_set=[
+                       (Xc.values, yc.values)], verbose=False)
+        self.is_fitted = True
+        logger.info("Trained LightGBM")
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        if not self.is_fitted:
+            raise ValueError("Model not fitted")
+        return self.model.predict(X.values)
 
 
 class XGBPredictor(BasePredictor):
-    """XGBoost predictor for stock prices."""
+    """XGBoost wrapper (XGBRegressor)."""
 
-    def __init__(self, horizon: int = 1, target_col: str = 'Adj Close', **xgb_params):
-        super().__init__(horizon, target_col)
+    def __init__(self, horizon: int = 1, target_col: str = "Adj Close", xgb_params: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(horizon=horizon, target_col=target_col)
+        if xgb is None:
+            raise ImportError("xgboost not installed")
+        params = xgb_params or {
+            "n_estimators": 500, "learning_rate": 0.05, "random_state": 42, "n_jobs": -1}
+        self.model = xgb.XGBRegressor(**params)
 
-        # Default XGBoost parameters
-        default_params = {
-            'objective': 'reg:squarederror',
-            'max_depth': 6,
-            'learning_rate': 0.1,
-            'n_estimators': 100,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'random_state': 42,
-            'n_jobs': -1
-        }
-        default_params.update(xgb_params)
-
-        self.model = xgb.XGBRegressor(**default_params)
-
-    def fit(self, X: pd.DataFrame, y: pd.Series,
-            early_stopping_rounds: int = 50, eval_metric: str = 'rmse') -> 'XGBPredictor':
-        """
-        Fit XGBoost model with early stopping.
-
-        Args:
-            X: Feature DataFrame
-            y: Target series
-            early_stopping_rounds: Early stopping patience
-            eval_metric: Evaluation metric for early stopping
-
-        Returns:
-            Self for method chaining
-        """
-        # Remove rows where target is NaN
-        valid_mask = ~y.isna()
-        X_clean = X[valid_mask].copy()
-        y_clean = y[valid_mask].copy()
-
-        # Store feature names
-        self.feature_names = list(X_clean.columns)
-
-        # Create train/validation split
-        split_idx = int(len(X_clean) * 0.8)
-
-        X_train, X_val = X_clean.iloc[:split_idx], X_clean.iloc[split_idx:]
-        y_train, y_val = y_clean.iloc[:split_idx], y_clean.iloc[split_idx:]
-
-        # Fit model with early stopping
-        self.model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
-            early_stopping_rounds=early_stopping_rounds,
-            eval_metric=eval_metric,
-            verbose=False
-        )
-
+    def fit(self, X: pd.DataFrame, y: pd.Series, **fit_kwargs) -> "XGBPredictor":
+        mask = ~y.isna()
+        Xc = X.loc[mask].copy()
+        yc = y.loc[mask].copy()
+        if Xc.empty:
+            raise ValueError("No training rows after dropping NaN")
+        self.feature_names = list(Xc.columns)
+        self.model.fit(Xc.values, yc.values, eval_set=[
+                       (Xc.values, yc.values)], verbose=False)
         self.is_fitted = True
+        logger.info("Trained XGBoost")
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Make predictions using XGBoost."""
         if not self.is_fitted:
-            raise ValueError("Model must be fitted before making predictions")
-
-        return self.model.predict(X)
-
-    def get_feature_importance(self) -> pd.Series:
-        """Get feature importance scores."""
-        if not self.is_fitted:
-            raise ValueError("Model must be fitted to get feature importance")
-
-        importance_dict = dict(
-            zip(self.feature_names, self.model.feature_importances_))
-        return pd.Series(importance_dict).sort_values(ascending=False)
+            raise ValueError("Model not fitted")
+        return self.model.predict(X.values)
 
 
-def create_features(df: pd.DataFrame) -> pd.DataFrame:
+# -----------------------------------------------------------------------------
+# Optional LSTM
+# -----------------------------------------------------------------------------
+
+
+def build_simple_lstm(input_shape: Tuple[int, int], units: int = 32, dropout: float = 0.1, dense_units: int = 16) -> Any:
+    """Build small LSTM model via Keras. Raises if Keras unavailable."""
+    if not keras_available:
+        raise ImportError("Keras/TensorFlow not available")
+    model = Sequential()
+    model.add(LSTM(units, input_shape=input_shape))
+    if dropout and dropout > 0:
+        model.add(Dropout(dropout))
+    model.add(Dense(dense_units, activation="relu"))
+    model.add(Dense(1, activation="linear"))
+    model.compile(optimizer="adam", loss="mse", metrics=["mae"])
+    return model
+
+
+class LSTMPredictor(BasePredictor):
+    """Wrapper around a Keras LSTM model. Expects pre-made sequences for training/prediction."""
+
+    def __init__(self, horizon: int = 1, target_col: str = "Adj Close", params: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(horizon=horizon, target_col=target_col)
+        if not keras_available:
+            raise ImportError("Keras/TensorFlow not available")
+        self.params = params or {
+            "n_timesteps": 10, "units": 32, "dropout": 0.1, "epochs": 50, "batch_size": 32}
+        self.model = None
+
+    def fit(self, X_seq: np.ndarray, y_seq: np.ndarray, **fit_kwargs) -> "LSTMPredictor":
+        """X_seq shape -> (n_samples, n_timesteps, n_features)"""
+        if not keras_available:
+            raise ImportError("Keras/TensorFlow not available")
+        input_shape = (X_seq.shape[1], X_seq.shape[2])
+        self.model = build_simple_lstm(input_shape, units=self.params.get(
+            "units", 32), dropout=self.params.get("dropout", 0.1))
+        es = EarlyStopping(patience=fit_kwargs.get(
+            "patience", 5), restore_best_weights=True)
+        self.model.fit(X_seq, y_seq, epochs=self.params.get(
+            "epochs", 50), batch_size=self.params.get("batch_size", 32), callbacks=[es], verbose=0)
+        self.is_fitted = True
+        logger.info("Trained LSTM")
+        return self
+
+    def predict(self, X_seq: np.ndarray) -> np.ndarray:
+        if not self.is_fitted or self.model is None:
+            raise ValueError("LSTM not trained")
+        preds = self.model.predict(X_seq)
+        return preds.reshape(-1)
+
+
+# -----------------------------------------------------------------------------
+# Hyperparameter Tuning Helpers
+# -----------------------------------------------------------------------------
+
+
+def tune_random_forest(X: np.ndarray, y: np.ndarray, param_dist: Optional[Dict[str, Iterable]] = None, n_iter: int = 20, cv: int = 3, random_state: int = 42) -> Tuple[Any, Dict[str, Any]]:
+    """Randomized search for RandomForest hyperparams. Returns best_estimator, best_params."""
+    default_dist = {"n_estimators": [100, 200, 400], "max_depth": [
+        None, 5, 10, 20], "min_samples_split": [2, 5, 10]}
+    dist = param_dist or default_dist
+    base = RandomForestRegressor(random_state=random_state, n_jobs=-1)
+    rs = RandomizedSearchCV(base, dist, n_iter=n_iter, cv=cv,
+                            scoring="neg_mean_squared_error", n_jobs=-1, random_state=random_state)
+    rs.fit(X, y)
+    logger.info(f"RandomForest tuning done: best_score={rs.best_score_:.4f}")
+    return rs.best_estimator_, rs.best_params_
+
+
+def tune_lightgbm(X: np.ndarray, y: np.ndarray, param_dist: Optional[Dict[str, Iterable]] = None, n_iter: int = 20, cv: int = 3, random_state: int = 42) -> Tuple[Any, Dict[str, Any]]:
+    """Randomized search for LightGBM. Requires lightgbm installed."""
+    if lgb is None:
+        raise ImportError("lightgbm not installed")
+    default_dist = {"n_estimators": [100, 200, 400], "learning_rate": [
+        0.01, 0.05, 0.1], "num_leaves": [31, 50, 100]}
+    dist = param_dist or default_dist
+    base = lgb.LGBMRegressor(random_state=random_state)
+    rs = RandomizedSearchCV(base, dist, n_iter=n_iter, cv=cv,
+                            scoring="neg_mean_squared_error", n_jobs=-1, random_state=random_state)
+    rs.fit(X, y)
+    logger.info(f"LightGBM tuning done: best_score={rs.best_score_:.4f}")
+    return rs.best_estimator_, rs.best_params_
+
+
+def tune_xgboost(X: np.ndarray, y: np.ndarray, param_dist: Optional[Dict[str, Iterable]] = None, n_iter: int = 20, cv: int = 3, random_state: int = 42) -> Tuple[Any, Dict[str, Any]]:
+    """Randomized search for XGBoost. Requires xgboost installed."""
+    if xgb is None:
+        raise ImportError("xgboost not installed")
+    default_dist = {"n_estimators": [100, 200, 400], "learning_rate": [
+        0.01, 0.05, 0.1], "max_depth": [3, 5, 7]}
+    dist = param_dist or default_dist
+    base = xgb.XGBRegressor(random_state=random_state, n_jobs=-1)
+    rs = RandomizedSearchCV(base, dist, n_iter=n_iter, cv=cv,
+                            scoring="neg_mean_squared_error", n_jobs=-1, random_state=random_state)
+    rs.fit(X, y)
+    logger.info(f"XGBoost tuning done: best_score={rs.best_score_:.4f}")
+    return rs.best_estimator_, rs.best_params_
+
+
+# -----------------------------------------------------------------------------
+# Multi-horizon training & prediction helpers
+# -----------------------------------------------------------------------------
+
+
+def _prepare_features_if_needed(df: pd.DataFrame, config_path: Optional[str] = None) -> pd.DataFrame:
     """
-    Create basic features for modeling.
-    Uses existing data utilities for calculations.
-
-    Args:
-        df: Input DataFrame with OHLCV data
-
-    Returns:
-        DataFrame with additional features
+    If df already contains Target_*d columns assume features are prepared.
+    Otherwise call apply_configured_features from src.features using config_path.
     """
-    df_features = df.copy()
-
-    # Price-based features
-    df_features['Price_Range'] = (df['High'] - df['Low']) / df['Close']
-    df_features['Price_Change'] = df['Close'].pct_change()
-    df_features['Volume_Change'] = df['Volume'].pct_change()
-
-    # Moving averages
-    for window in [5, 10, 20]:
-        df_features[f'SMA_{window}'] = df['Close'].rolling(
-            window=window).mean()
-        df_features[f'Close_SMA_Ratio_{window}'] = df['Close'] / \
-            df_features[f'SMA_{window}']
-
-    # Volatility features
-    for window in [5, 10, 20]:
-        returns = calculate_returns(df['Close'], method='simple')
-        df_features[f'Volatility_{window}'] = returns.rolling(
-            window=window).std()
-
-    # Volume features
-    for window in [5, 10]:
-        df_features[f'Volume_SMA_{window}'] = df['Volume'].rolling(
-            window=window).mean()
-        df_features[f'Volume_Ratio_{window}'] = df['Volume'] / \
-            df_features[f'Volume_SMA_{window}']
-
-    # Lag features
-    for lag in [1, 2, 3, 5]:
-        df_features[f'Close_Lag_{lag}'] = df['Close'].shift(lag)
-        df_features[f'Volume_Lag_{lag}'] = df['Volume'].shift(lag)
-        df_features[f'Return_Lag_{lag}'] = calculate_returns(
-            df['Close']).shift(lag)
-
-    return df_features
+    if any(col.startswith("Target_") for col in df.columns):
+        return df.copy()
+    cfg = config_path or "config/config.yaml"
+    try:
+        df_prepped = apply_configured_features(df, config_path=cfg)
+        return df_prepped
+    except Exception as e:
+        logger.warning(f"apply_configured_features failed: {e}")
+        # fallback to create_all_features with defaults
+        df_prepped = create_all_features(df)
+        df_prepped = create_targets(df_prepped, horizons=[1, 7, 14, 28])
+        return df_prepped
 
 
-def walk_forward_validation(df: pd.DataFrame, model_class, model_params: dict,
-                            horizon: int, initial_train_size: float = 0.7,
-                            step_size: int = 30) -> Dict[str, Any]:
+def train_models_multi_horizon(df: pd.DataFrame,
+                               feature_columns: List[str],
+                               horizons: List[int],
+                               model_type: str = "random_forest",
+                               model_params: Optional[Dict[int,
+                                                           Dict[str, Any]]] = None,
+                               save_dir: Optional[str] = None,
+                               config_path: Optional[str] = None) -> Dict[int, ModelRecord]:
     """
-    Perform walk-forward validation for time series.
-
-    Args:
-        df: Input DataFrame with features
-        model_class: Model class to instantiate
-        model_params: Parameters for model
-        horizon: Prediction horizon
-        initial_train_size: Initial training size as fraction
-        step_size: Number of days to step forward
-
-    Returns:
-        Dictionary with validation results
+    Train one model per horizon. model_params can be a dict keyed by horizon or a single param dict.
+    Returns dict: horizon -> ModelRecord.
     """
-    logger = logging.getLogger(__name__)
+    df_prepped = _prepare_features_if_needed(df, config_path=config_path)
+    records: Dict[int, ModelRecord] = {}
+    model_params = model_params or {}
 
-    # Create features and target
-    df_features = create_features(df)
-    target = df_features['Adj Close'].shift(-horizon)
-
-    # Remove non-feature columns for X
-    feature_cols = [col for col in df_features.columns
-                    if col not in ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']]
-    X = df_features[feature_cols].copy()
-
-    # Remove rows with NaN values
-    valid_mask = ~(X.isna().any(axis=1) | target.isna())
-    X_clean = X[valid_mask].copy()
-    y_clean = target[valid_mask].copy()
-
-    if len(X_clean) == 0:
-        logger.error("No valid data after cleaning")
-        return {'error': 'No valid data'}
-
-    # Initialize walk-forward validation
-    initial_size = int(len(X_clean) * initial_train_size)
-    predictions = []
-    actuals = []
-    dates = []
-
-    current_start = 0
-
-    while current_start + initial_size + step_size < len(X_clean):
-        # Define train and test sets
-        train_end = current_start + initial_size
-        test_start = train_end
-        test_end = test_start + step_size
-
-        X_train = X_clean.iloc[current_start:train_end]
-        y_train = y_clean.iloc[current_start:train_end]
-        X_test = X_clean.iloc[test_start:test_end]
-        y_test = y_clean.iloc[test_start:test_end]
-
-        # Train model
-        model = model_class(horizon=horizon, **model_params)
-        try:
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-
-            predictions.extend(pred)
-            actuals.extend(y_test.values)
-            dates.extend(y_clean.index[test_start:test_end])
-
-        except Exception as e:
+    for h in horizons:
+        target_col = f"Target_{h}d"
+        if target_col not in df_prepped.columns:
             logger.warning(
-                f"Training failed for period {current_start}-{train_end}: {e}")
+                f"Target {target_col} not found; skipping horizon {h}")
+            continue
 
-        # Move forward
-        current_start += step_size
+        data_h = df_prepped[feature_columns + [target_col]].dropna()
+        if data_h.empty:
+            logger.warning(f"No rows for horizon {h} after dropna")
+            continue
 
-    if not predictions:
-        return {'error': 'No successful predictions'}
+        X = data_h[feature_columns]
+        y = data_h[target_col]
 
-    # Calculate metrics
-    predictions = np.array(predictions)
-    actuals = np.array(actuals)
+        # instantiate model
+        params_for_h = model_params.get(h) if isinstance(model_params, dict) and h in model_params else (
+            model_params if isinstance(model_params, dict) and not any(isinstance(k, int) for k in model_params.keys()) else {})
+        predictor: BasePredictor
+        try:
+            if model_type.lower() in ("rf", "random_forest"):
+                predictor = RandomForestPredictor(
+                    horizon=h, target_col=target_col, rf_params=params_for_h)
+            elif model_type.lower() in ("lgb", "lightgbm"):
+                predictor = LightGBMPredictor(
+                    horizon=h, target_col=target_col, lgb_params=params_for_h)
+            elif model_type.lower() in ("xgb", "xgboost"):
+                predictor = XGBPredictor(
+                    horizon=h, target_col=target_col, xgb_params=params_for_h)
+            elif model_type.lower() in ("naive",):
+                predictor = NaiveLastValue(horizon=h, target_col=target_col)
+            elif model_type.lower() in ("rw", "random_walk"):
+                predictor = RandomWalkDrift(horizon=h, target_col=target_col)
+            else:
+                raise ValueError(f"Unknown model_type: {model_type}")
+        except Exception as e:
+            logger.error(f"Failed to instantiate model for horizon {h}: {e}")
+            continue
 
-    rmse = np.sqrt(mean_squared_error(actuals, predictions))
-    mae = mean_absolute_error(actuals, predictions)
-    mape = np.mean(np.abs((actuals - predictions) / actuals)) * 100
+        # Fit
+        try:
+            predictor.fit(X, y)
+            predictor.feature_names = list(X.columns)
+            predictor.is_fitted = True
+            rec = ModelRecord(name=predictor.__class__.__name__, model=predictor, horizon=h,
+                              feature_columns=list(X.columns), trained=True, params=params_for_h or {})
+            records[h] = rec
+            logger.info(
+                f"Trained model for horizon {h}: {rec.name}, rows={len(y)}")
+            # optional save
+            if save_dir:
+                _ensure_dir(save_dir + "/.keep")
+                save_path = os.path.join(save_dir, f"{rec.name}_h{h}.joblib")
+                predictor.save_model(save_path)
+        except Exception as e:
+            logger.error(f"Training failed for horizon {h}: {e}")
 
-    # Directional accuracy
-    actual_direction = np.sign(np.diff(actuals))
-    pred_direction = np.sign(np.diff(predictions))
-    directional_accuracy = np.mean(actual_direction == pred_direction) * 100
+    return records
 
-    results = {
-        'rmse': rmse,
-        'mae': mae,
-        'mape': mape,
-        'directional_accuracy': directional_accuracy,
-        'n_predictions': len(predictions),
-        'predictions': predictions,
-        'actuals': actuals,
-        'dates': dates
-    }
 
-    logger.info(
-        f"Walk-forward validation completed: RMSE={rmse:.4f}, MAE={mae:.4f}")
+def predict_multi_horizon(records: Dict[int, ModelRecord], df: pd.DataFrame, feature_columns: List[str]) -> Dict[int, np.ndarray]:
+    """
+    Given trained ModelRecords produce predictions aligned to df.index.
+    Returns dict horizon -> numpy array (with np.nan where no prediction).
+    """
+    n = len(df)
+    forecasts: Dict[int, np.ndarray] = {}
+    for h, rec in records.items():
+        preds = np.full(n, np.nan, dtype=float)
+        predictor: BasePredictor = rec.model
+        # find rows with complete features
+        rows = df[feature_columns].dropna()
+        if rows.empty:
+            forecasts[h] = preds
+            continue
+        try:
+            p = predictor.predict(rows)
+            # align values to df index positions of rows
+            for i, idx in enumerate(rows.index):
+                pos = df.index.get_loc(idx)
+                preds[pos] = float(p[i])
+        except Exception as e:
+            logger.error(f"Prediction error for horizon {h}: {e}")
+        forecasts[h] = preds
+    return forecasts
+
+
+# -----------------------------------------------------------------------------
+# Integration with evaluate.walk_forward_validation
+# -----------------------------------------------------------------------------
+
+
+def evaluate_with_walk_forward(df: pd.DataFrame,
+                               feature_columns: List[str],
+                               horizons: List[int],
+                               model_type: str = "random_forest",
+                               model_params: Optional[Dict[int,
+                                                           Dict[str, Any]]] = None,
+                               min_train_size: int = 252,
+                               step_size: int = 21,
+                               config_path: Optional[str] = None) -> Dict[int, Dict[str, Any]]:
+    """
+    Run walk-forward validation using src.evaluate.walk_forward_validation for each horizon.
+    Returns dict: horizon -> validation result (as produced by evaluate.walk_forward_validation).
+    """
+    df_prepped = _prepare_features_if_needed(df, config_path=config_path)
+    results: Dict[int, Dict[str, Any]] = {}
+
+    for h in horizons:
+        model_params_for_h = model_params.get(h) if isinstance(
+            model_params, dict) and h in model_params else (model_params or {})
+        # build a model instance to pass to the validator; walk_forward_validation expects model with fit/predict
+        try:
+            if model_type.lower() in ("rf", "random_forest"):
+                model_inst = RandomForestPredictor(
+                    horizon=h, target_col=f"Target_{h}d", rf_params=model_params_for_h)
+            elif model_type.lower() in ("lgb", "lightgbm"):
+                model_inst = LightGBMPredictor(
+                    horizon=h, target_col=f"Target_{h}d", lgb_params=model_params_for_h)
+            elif model_type.lower() in ("xgb", "xgboost"):
+                model_inst = XGBPredictor(
+                    horizon=h, target_col=f"Target_{h}d", xgb_params=model_params_for_h)
+            elif model_type.lower() in ("naive",):
+                model_inst = NaiveLastValue(
+                    horizon=h, target_col=f"Target_{h}d")
+            elif model_type.lower() in ("rw", "random_walk"):
+                model_inst = RandomWalkDrift(
+                    horizon=h, target_col=f"Target_{h}d")
+            else:
+                raise ValueError(f"Unknown model_type: {model_type}")
+        except Exception as e:
+            logger.error(
+                f"Failed to create model instance for horizon {h}: {e}")
+            results[h] = {"error": str(e)}
+            continue
+
+        try:
+            wf_res = walk_forward_validation(
+                data=df_prepped,
+                model=model_inst,
+                horizons=[h],
+                feature_columns=feature_columns,
+                target_column_template="Target_{}d",
+                min_train_size=min_train_size,
+                step_size=step_size,
+            )
+            # wf_res is dict keyed by horizon
+            results[h] = wf_res.get(h, {"error": "no_result"})
+            logger.info(f"Walk-forward completed for horizon {h}")
+        except Exception as e:
+            logger.error(f"Walk-forward validation error for horizon {h}: {e}")
+            results[h] = {"error": str(e)}
 
     return results
 
 
-def train_model(ticker: str, model_type: str, horizon: int,
-                data_dir: str = 'data/raw', config_path: str = 'config/config.yaml') -> BasePredictor:
-    """
-    Train a model for a specific ticker and horizon.
-
-    Args:
-        ticker: Stock ticker symbol
-        model_type: Type of model ('naive', 'random_walk', 'rf', 'lightgbm', 'xgboost')
-        horizon: Prediction horizon in days
-        data_dir: Directory containing raw data
-        config_path: Path to configuration file
-
-    Returns:
-        Trained model instance
-    """
-    logger = logging.getLogger(__name__)
-
-    # Load configuration and data using existing functions
-    config = load_config(config_path)
-
-    # Load and clean data using existing functions
-    filepath = os.path.join(data_dir, f'{ticker}.csv')
-    df_raw = load_raw_data(filepath)
-    df_clean = clean_data(df_raw)
-
-    # Validate data quality using existing function
-    if not validate_data_quality(df_clean):
-        logger.warning(f"Data quality issues detected for {ticker}")
-
-    # Create features
-    df_features = create_features(df_clean)
-
-    # Prepare target variable
-    target = df_features['Adj Close'].shift(-horizon)
-
-    # Select features (exclude OHLCV columns)
-    feature_cols = [col for col in df_features.columns
-                    if col not in ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']]
-    X = df_features[feature_cols].copy()
-
-    # Remove rows with NaN values
-    valid_mask = ~(X.isna().any(axis=1) | target.isna())
-    X_clean = X[valid_mask].copy()
-    y_clean = target[valid_mask].copy()
-
-    # Get model parameters from config
-    model_config = config.get('models', {})
-
-    # Initialize and train model
-    if model_type == 'naive':
-        model = NaivePredictor(horizon=horizon)
-    elif model_type == 'random_walk':
-        model = RandomWalkPredictor(horizon=horizon)
-    elif model_type == 'rf':
-        rf_params = model_config.get('baseline', {}).get('random_forest', {})
-        model = RFPredictor(horizon=horizon, **rf_params)
-    elif model_type == 'lightgbm':
-        lgb_params = model_config.get('advanced', {}).get('lightgbm', {})
-        model = LGBMPredictor(horizon=horizon, **lgb_params)
-    elif model_type == 'xgboost':
-        xgb_params = model_config.get('advanced', {}).get('xgboost', {})
-        model = XGBPredictor(horizon=horizon, **xgb_params)
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
-
-    # Train model
-    logger.info(
-        f"Training {model_type} model for {ticker} (horizon={horizon})")
-    model.fit(X_clean, y_clean)
-
-    logger.info(f"Model training completed successfully")
-    return model
+# -----------------------------------------------------------------------------
+# Utilities: save/load multiple model records metadata
+# -----------------------------------------------------------------------------
 
 
-def main():
-    """Main function to handle CLI arguments and execute model training."""
-    logger = setup_logging()
+def save_model_records(records: Dict[int, ModelRecord], path: str) -> None:
+    _ensure_dir(path)
+    meta = {h: {"name": r.name, "horizon": r.horizon, "trained": r.trained,
+                "params": r.params} for h, r in records.items()}
+    with open(path, "w") as f:
+        json.dump(meta, f, indent=2)
+    logger.info(f"Saved model records metadata to {path}")
+
+
+# -----------------------------------------------------------------------------
+# CLI wrapper (keeps original CLI convenience but delegates to module functions)
+# -----------------------------------------------------------------------------
+def cli_main() -> None:
+    """Simple CLI entrypoint to train a single model/horizon (keeps compatibility)."""
+    import argparse
+    from datetime import datetime
 
     parser = argparse.ArgumentParser(
-        description="Train stock prediction models",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+        description="Train stock prediction model (wrapper)")
+    parser.add_argument("--ticker", required=True)
     parser.add_argument(
-        '--ticker',
-        required=True,
-        help='Stock ticker symbol'
-    )
-    parser.add_argument(
-        '--model',
-        choices=['naive', 'random_walk', 'rf', 'lightgbm', 'xgboost'],
-        default='rf',
-        help='Model type to train'
-    )
-    parser.add_argument(
-        '--horizon',
-        type=int,
-        default=1,
-        help='Prediction horizon in days'
-    )
-    parser.add_argument(
-        '--data-dir',
-        default='data/raw',
-        help='Directory containing raw data'
-    )
-    parser.add_argument(
-        '--config',
-        default='config/config.yaml',
-        help='Path to configuration file'
-    )
-    parser.add_argument(
-        '--validate',
-        action='store_true',
-        help='Run walk-forward validation'
-    )
-    parser.add_argument(
-        '--save',
-        help='Path to save trained model'
-    )
-    parser.add_argument(
-        '--output-dir',
-        default='models',
-        help='Directory to save models (used if --save not specified)'
-    )
-    parser.add_argument(
-        '--feature-importance',
-        action='store_true',
-        help='Display feature importance for tree-based models'
-    )
-    parser.add_argument(
-        '--predict',
-        action='store_true',
-        help='Make predictions on the latest available data'
-    )
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Enable verbose logging'
-    )
-
+        "--model", choices=["naive", "random_walk", "rf", "lightgbm", "xgboost"], default="rf")
+    parser.add_argument("--horizon", type=int, default=1)
+    parser.add_argument("--data-dir", default="data/raw")
+    parser.add_argument("--config", default="config/config.yaml")
+    parser.add_argument("--save", default=None)
+    parser.add_argument("--output-dir", default="models")
+    parser.add_argument("--validate", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    # Set logging level based on verbose flag
     if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-        logger.debug("Verbose logging enabled")
+        import logging as _logging
+        _logging.getLogger().setLevel(_logging.DEBUG)
 
-    try:
-        logger.info(f"Starting model training for {args.ticker}")
-        logger.info(f"Model: {args.model}, Horizon: {args.horizon} days")
+    logger.info(
+        f"Starting CLI training for {args.ticker} model={args.model} horizon={args.horizon}")
 
-        # Validate input arguments
-        if args.horizon <= 0:
-            raise ValueError("Horizon must be positive")
+    # load & prepare data
+    data_file = os.path.join(args.data_dir, f"{args.ticker}.csv")
+    if not os.path.exists(data_file):
+        raise FileNotFoundError(f"Data file not found: {data_file}")
+    df_raw = load_raw_data(data_file)
+    df_clean = clean_data(df_raw)
 
-        if not os.path.exists(args.data_dir):
-            raise FileNotFoundError(
-                f"Data directory not found: {args.data_dir}")
+    # apply features via project function
+    df_fe = _prepare_features_if_needed(df_clean, config_path=args.config)
 
-        # Check if data file exists
-        data_file = os.path.join(args.data_dir, f'{args.ticker}.csv')
-        if not os.path.exists(data_file):
-            raise FileNotFoundError(f"Data file not found: {data_file}")
+    # pick features automatically (exclude OHLCV)
+    feature_cols = [c for c in df_fe.columns if c not in [
+        "Open", "High", "Low", "Close", "Adj Close", "Volume"] and not c.startswith("Target_")]
 
-        # Train model
-        model = train_model(
-            ticker=args.ticker,
-            model_type=args.model,
-            horizon=args.horizon,
-            data_dir=args.data_dir,
-            config_path=args.config
-        )
+    # train single-horizon model via train_models_multi_horizon wrapper
+    records = train_models_multi_horizon(df_fe, feature_cols, horizons=[
+                                         args.horizon], model_type=args.model, save_dir=args.output_dir, config_path=args.config)
+    rec = records.get(args.horizon)
+    if rec:
+        model_path = args.save or os.path.join(
+            args.output_dir, f"{rec.name}_{args.horizon}.joblib")
+        rec.model.save_model(model_path)
+        logger.info(f"Saved trained model to {model_path}")
+    else:
+        logger.error("No model trained")
 
-        # Determine save path
-        save_path = args.save
-        if not save_path:
-            # Auto-generate save path
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{args.ticker}_{args.model}_h{args.horizon}_{timestamp}.joblib"
-            save_path = os.path.join(args.output_dir, filename)
+    # optionally validate using walk-forward
+    if args.validate:
+        wf_results = evaluate_with_walk_forward(df_fe, feature_cols, horizons=[
+                                                args.horizon], model_type=args.model, config_path=args.config)
+        logger.info(f"Validation summary: {wf_results.get(args.horizon)}")
 
-        # Save model
-        try:
-            model.save_model(save_path)
-            logger.info(f"Model saved to {save_path}")
-        except Exception as e:
-            logger.error(f"Failed to save model: {e}")
-
-        # Display feature importance if requested and available
-        if args.feature_importance and hasattr(model, 'get_feature_importance'):
-            try:
-                importance = model.get_feature_importance()
-                print(
-                    f"\nTop 10 Feature Importance for {args.ticker} ({args.model}):")
-                print("-" * 50)
-                for feature, score in importance.head(10).items():
-                    print(f"{feature:30} {score:10.6f}")
-            except Exception as e:
-                logger.warning(f"Could not display feature importance: {e}")
-
-        # Make predictions if requested
-        if args.predict:
-            try:
-                logger.info("Making predictions on latest data...")
-
-                # Load and prepare latest data
-                filepath = os.path.join(args.data_dir, f'{args.ticker}.csv')
-                df_raw = load_raw_data(filepath)
-                df_clean = clean_data(df_raw)
-                df_features = create_features(df_clean)
-
-                # Get latest features
-                feature_cols = [col for col in df_features.columns
-                                if col not in ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']]
-                latest_features = df_features[feature_cols].iloc[-1:].copy()
-
-                # Remove any NaN values by forward filling
-                latest_features = latest_features.fillna(
-                    method='ffill').fillna(0)
-
-                # Make prediction
-                prediction = model.predict(latest_features)
-                current_price = df_clean['Adj Close'].iloc[-1]
-
-                print(f"\nPrediction Results for {args.ticker}:")
-                print("-" * 40)
-                print(f"Current Price: ${current_price:.2f}")
-                print(
-                    f"Predicted Price ({args.horizon} days): ${prediction[0]:.2f}")
-                print(
-                    f"Expected Change: {((prediction[0] - current_price) / current_price * 100):+.2f}%")
-
-            except Exception as e:
-                logger.error(f"Prediction failed: {e}")
-
-        # Run validation if requested
-        if args.validate:
-            logger.info("Running walk-forward validation...")
-
-            try:
-                # Load data for validation
-                filepath = os.path.join(args.data_dir, f'{args.ticker}.csv')
-                df_raw = load_raw_data(filepath)
-                df_clean = clean_data(df_raw)
-
-                # Get model class and parameters
-                config = load_config(args.config)
-                model_config = config.get('models', {})
-
-                model_classes = {
-                    'naive': NaivePredictor,
-                    'random_walk': RandomWalkPredictor,
-                    'rf': RFPredictor,
-                    'lightgbm': LGBMPredictor,
-                    'xgboost': XGBPredictor
-                }
-
-                # Get model-specific parameters
-                model_params = {}
-                if args.model == 'rf':
-                    model_params = model_config.get(
-                        'baseline', {}).get('random_forest', {})
-                elif args.model == 'lightgbm':
-                    model_params = model_config.get(
-                        'advanced', {}).get('lightgbm', {})
-                elif args.model == 'xgboost':
-                    model_params = model_config.get(
-                        'advanced', {}).get('xgboost', {})
-
-                results = walk_forward_validation(
-                    df=df_clean,
-                    model_class=model_classes[args.model],
-                    model_params=model_params,
-                    horizon=args.horizon
-                )
-
-                if 'error' not in results:
-                    print(
-                        f"\nValidation Results for {args.ticker} ({args.model}, horizon={args.horizon}):")
-                    print("=" * 60)
-                    print(
-                        f"Root Mean Squared Error (RMSE): {results['rmse']:.4f}")
-                    print(
-                        f"Mean Absolute Error (MAE):     {results['mae']:.4f}")
-                    print(
-                        f"Mean Absolute Percentage Error: {results['mape']:.2f}%")
-                    print(
-                        f"Directional Accuracy:          {results['directional_accuracy']:.2f}%")
-                    print(
-                        f"Number of Predictions:         {results['n_predictions']}")
-
-                    # Performance interpretation
-                    print(f"\nPerformance Interpretation:")
-                    print("-" * 30)
-                    if results['mape'] < 5:
-                        print("📈 Excellent prediction accuracy")
-                    elif results['mape'] < 10:
-                        print("✅ Good prediction accuracy")
-                    elif results['mape'] < 20:
-                        print("⚠️  Moderate prediction accuracy")
-                    else:
-                        print(
-                            "❌ Poor prediction accuracy - consider different model/features")
-
-                    if results['directional_accuracy'] > 55:
-                        print("📊 Good directional prediction capability")
-                    else:
-                        print("📉 Limited directional prediction capability")
-
-                else:
-                    logger.error(f"Validation failed: {results['error']}")
-
-            except Exception as e:
-                logger.error(f"Validation error: {e}")
-
-        # Summary
-        print(f"\n{'='*60}")
-        print(f"MODEL TRAINING SUMMARY")
-        print(f"{'='*60}")
-        print(f"Ticker:          {args.ticker}")
-        print(f"Model:           {args.model}")
-        print(f"Horizon:         {args.horizon} days")
-        print(f"Model saved to:  {save_path}")
-        print(f"Training Status: ✅ COMPLETED SUCCESSFULLY")
-        print(f"{'='*60}")
-
-        logger.info("Model training pipeline completed successfully!")
-
-    except KeyboardInterrupt:
-        logger.info("Training interrupted by user")
-        print("\n⚠️  Training was interrupted by user")
-
-    except FileNotFoundError as e:
-        logger.error(f"File not found: {e}")
-        print(f"❌ Error: {e}")
-        print("Please check that the data file exists and the path is correct.")
-
-    except ValueError as e:
-        logger.error(f"Invalid input: {e}")
-        print(f"❌ Error: {e}")
-
-    except Exception as e:
-        logger.error(f"Training failed: {str(e)}")
-        print(f"❌ Training failed: {str(e)}")
-        print("Check the logs for more detailed error information.")
-
-        # Additional debugging info if verbose
-        if args.verbose:
-            import traceback
-            print(f"\nDetailed error trace:")
-            traceback.print_exc()
+    print("Done.")
 
 
-if __name__ == '__main__':
-    main()
+# -----------------------------------------------------------------------------
+# If executed as script, run CLI wrapper
+# -----------------------------------------------------------------------------
+if __name__ == "__main__":
+    cli_main()

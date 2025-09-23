@@ -21,60 +21,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from scipy import stats
-import yaml
 
-
-def load_config(config_path: str = "config/config.yaml") -> Dict[str, Any]:
-    """
-    Load configuration from YAML file.
-
-    Args:
-        config_path: Path to configuration file
-
-    Returns:
-        Configuration dictionary
-    """
-    logger = logging.getLogger(__name__)
-
-    # Try multiple possible config file locations
-    possible_paths = [
-        config_path,
-        "config.yaml",
-        "config/config.yaml",
-        os.path.join("config", "config.yaml")
-    ]
-
-    for path in possible_paths:
-        try:
-            if os.path.exists(path):
-                with open(path, 'r') as file:
-                    config = yaml.safe_load(file)
-                    logger.info(f"Configuration loaded from {path}")
-                    return config
-        except yaml.YAMLError as e:
-            logger.error(f"Error parsing config file {path}: {e}")
-            continue
-        except Exception as e:
-            logger.error(f"Error loading config file {path}: {e}")
-            continue
-
-    # If no config file found, return defaults
-    logger.warning(
-        f"No config file found. Tried: {possible_paths}. Using defaults.")
-    return {
-        'data': {
-            'tickers': ['AAPL', 'GOOGL', 'MSFT', 'TSLA', 'AMZN'],
-            'date_range': {
-                'start_date': '2020-01-01',
-                'end_date': None
-            },
-            'raw_data_dir': 'data/raw',
-            'target_column': 'Close'  # More flexible default
-        },
-        'logging': {
-            'level': 'INFO'
-        }
-    }
+from src.utils import load_config, setup_logging
 
 
 def get_default_tickers(config: Dict[str, Any]) -> List[str]:
@@ -95,16 +43,6 @@ def get_default_date_range(config: Dict[str, Any]) -> tuple:
         return start_date, end_date
     except:
         return '2020-01-01', datetime.now().strftime('%Y-%m-%d')
-
-
-def setup_logging():
-    """Setup logging configuration for the data module."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    return logging.getLogger(__name__)
 
 
 def validate_date_format(date_str: Optional[str]) -> bool:

@@ -17,8 +17,9 @@ from scipy import stats
 import matplotlib.pyplot as plt
 import warnings
 
-# Import project utilities (do not reimplement)
-from src.data import load_config, setup_logging, load_raw_data
+# Import project utilities
+from src.data import load_raw_data
+from src.utils import load_config, setup_logging
 
 warnings.filterwarnings("ignore")
 

@@ -52,13 +52,11 @@ except Exception:
 
 # Project imports (use existing functions)
 from src.data import (
-    load_raw_data,
     clean_data,
-    load_config,
-    setup_logging,
     validate_data_quality,
     calculate_returns,
     align_timestamps,
+    load_raw_data,
 )
 from src.features import (
     create_all_features,
@@ -70,6 +68,9 @@ from src.evaluate import (
     time_series_cross_validation,
     evaluate_regression_model,
 )
+
+# Import project utilities
+from src.utils import ensure_dir_exists, load_config, setup_logging
 
 warnings.filterwarnings("ignore")
 logger = setup_logging()
@@ -88,10 +89,6 @@ class ModelRecord:
     feature_columns: List[str]
     trained: bool
     params: Dict[str, Any]
-
-
-def _ensure_dir(path: str) -> None:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
 
 # -----------------------------------------------------------------------------
@@ -123,7 +120,7 @@ class BasePredictor:
 
     def save_model(self, path: str) -> None:
         """Persist model to disk (joblib/pickle)."""
-        _ensure_dir(path)
+        ensure_dir_exists(os.path.dirname(path))
         payload = {
             "horizon": self.horizon,
             "target_col": self.target_col,
@@ -504,7 +501,7 @@ def train_models_multi_horizon(df: pd.DataFrame,
                 f"Trained model for horizon {h}: {rec.name}, rows={len(y)}")
             # optional save
             if save_dir:
-                _ensure_dir(save_dir + "/.keep")
+                ensure_dir_exists(save_dir)
                 save_path = os.path.join(save_dir, f"{rec.name}_h{h}.joblib")
                 predictor.save_model(save_path)
         except Exception as e:
@@ -615,7 +612,7 @@ def evaluate_with_walk_forward(df: pd.DataFrame,
 
 
 def save_model_records(records: Dict[int, ModelRecord], path: str) -> None:
-    _ensure_dir(path)
+    ensure_dir_exists(os.path.dirname(path))
     meta = {h: {"name": r.name, "horizon": r.horizon, "trained": r.trained,
                 "params": r.params} for h, r in records.items()}
     with open(path, "w") as f:

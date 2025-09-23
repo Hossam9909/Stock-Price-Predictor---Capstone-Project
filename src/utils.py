@@ -88,11 +88,18 @@ def get_project_path(*subpaths: str) -> Path:
 # General Helper Functions
 # -------------------------------------------------------------------
 
-def setup_logging():
+def setup_logging(config: Optional[Dict[str, Any]] = None):
     """Setup logging configuration for the project."""
+    log_config = config.get('logging', {}) if config else {}
+    level = log_config.get('level', 'INFO').upper()
+    log_format = log_config.get(
+        'format',
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=getattr(logging, level, logging.INFO),
+        format=log_format,
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     return logging.getLogger(__name__)
@@ -133,23 +140,8 @@ def load_config(config_path: str = "config/config.yaml") -> Dict[str, Any]:
             logger.error(f"Error loading config file {path}: {e}")
             continue
 
-    # If no config file found, return defaults
-    logger.warning(
-        f"No config file found. Tried: {possible_paths}. Using defaults.")
-    return {
-        'data': {
-            'tickers': ['AAPL', 'GOOGL', 'MSFT', 'TSLA', 'AMZN'],
-            'date_range': {
-                'start_date': '2020-01-01',
-                'end_date': None
-            },
-            'raw_data_dir': 'data/raw',
-            'target_column': 'Close'  # More flexible default
-        },
-        'logging': {
-            'level': 'INFO'
-        }
-    }
+    # If no config file is found, raise an error.
+    raise FileNotFoundError(f"Configuration file not found. Tried paths: {possible_paths}")
 
 
 def save_results_to_json(results: Dict[str, Any], filepath: Union[str, Path]) -> None:
@@ -319,4 +311,4 @@ def safe_execute(func, *args, **kwargs) -> Optional[Any]:
 
 
 # Initialize logging for this module
-logger = setup_logging()
+logger = logging.getLogger(__name__)

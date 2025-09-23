@@ -36,25 +36,45 @@ def load_config(config_path: str = "config/config.yaml") -> Dict[str, Any]:
     """
     logger = logging.getLogger(__name__)
 
-    try:
-        with open(config_path, 'r') as file:
-            config = yaml.safe_load(file)
-            logger.info(f"Configuration loaded from {config_path}")
-            return config
-    except FileNotFoundError:
-        logger.warning(f"Config file {config_path} not found. Using defaults.")
-        return {
-            'data': {
-                'tickers': ['AAPL', 'GOOGL', 'MSFT', 'TSLA', 'AMZN'],
-                'date_range': {
-                    'start_date': '2020-01-01',
-                    'end_date': None
-                }
-            }
+    # Try multiple possible config file locations
+    possible_paths = [
+        config_path,
+        "config.yaml",
+        "config/config.yaml",
+        os.path.join("config", "config.yaml")
+    ]
+
+    for path in possible_paths:
+        try:
+            if os.path.exists(path):
+                with open(path, 'r') as file:
+                    config = yaml.safe_load(file)
+                    logger.info(f"Configuration loaded from {path}")
+                    return config
+        except yaml.YAMLError as e:
+            logger.error(f"Error parsing config file {path}: {e}")
+            continue
+        except Exception as e:
+            logger.error(f"Error loading config file {path}: {e}")
+            continue
+
+    # If no config file found, return defaults
+    logger.warning(
+        f"No config file found. Tried: {possible_paths}. Using defaults.")
+    return {
+        'data': {
+            'tickers': ['AAPL', 'GOOGL', 'MSFT', 'TSLA', 'AMZN'],
+            'date_range': {
+                'start_date': '2020-01-01',
+                'end_date': None
+            },
+            'raw_data_dir': 'data/raw',
+            'target_column': 'Close'  # More flexible default
+        },
+        'logging': {
+            'level': 'INFO'
         }
-    except yaml.YAMLError as e:
-        logger.error(f"Error parsing config file: {e}")
-        return {}
+    }
 
 
 def get_default_tickers(config: Dict[str, Any]) -> List[str]:
@@ -143,8 +163,41 @@ def download_ticker(ticker: str, start: str, end: str, out_dir: str = 'data/raw'
             logger.warning(f"No data found for ticker {ticker}")
             return None
 
-        # Clean and prepare data
-        df = df[['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']].copy()
+        # Debug: Print available columns
+        logger.info(f"Available columns for {ticker}: {list(df.columns)}")
+
+        # Handle different column structures
+        # yfinance sometimes returns MultiIndex columns for single tickers
+        if isinstance(df.columns, pd.MultiIndex):
+            # If MultiIndex, flatten it and take the first level
+            df.columns = df.columns.droplevel(
+                1) if df.columns.nlevels > 1 else df.columns
+
+        # Define the columns we want to keep, in order of preference
+        desired_columns = ['Open', 'High', 'Low',
+                           'Close', 'Adj Close', 'Volume']
+        available_columns = []
+
+        # Check which columns are actually available
+        for col in desired_columns:
+            if col in df.columns:
+                available_columns.append(col)
+            else:
+                logger.warning(f"Column '{col}' not found for {ticker}")
+
+        # If we don't have Adj Close, use Close
+        if 'Adj Close' not in available_columns and 'Close' in available_columns:
+            logger.warning(
+                f"Using 'Close' instead of 'Adj Close' for {ticker}")
+            df['Adj Close'] = df['Close']
+            available_columns.append('Adj Close')
+
+        # Select only available columns
+        if available_columns:
+            df = df[available_columns].copy()
+        else:
+            logger.error(f"No recognizable price columns found for {ticker}")
+            return None
 
         # Remove any rows with all NaN values
         df = df.dropna(how='all')
@@ -157,11 +210,15 @@ def download_ticker(ticker: str, start: str, end: str, out_dir: str = 'data/raw'
         out_path = os.path.join(out_dir, f'{ticker}.csv')
         df.to_csv(out_path)
 
-        logger.info(f"Successfully saved {out_path} (rows={len(df)})")
+        logger.info(
+            f"Successfully saved {out_path} (rows={len(df)}, columns={list(df.columns)})")
         return out_path
 
     except Exception as e:
         logger.error(f"Error downloading {ticker}: {str(e)}")
+        # Add more detailed error information
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return None
 
 

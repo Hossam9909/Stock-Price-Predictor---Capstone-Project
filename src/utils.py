@@ -96,12 +96,31 @@ def setup_logging(config: Optional[Dict[str, Any]] = None):
         'format',
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
+    log_file = config.get('paths', {}).get('log_file') if config else None
 
-    logging.basicConfig(
-        level=getattr(logging, level, logging.INFO),
-        format=log_format,
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    # Get root logger
+    logger = logging.getLogger()
+    logger.setLevel(getattr(logging, level, logging.INFO))
+
+    # Clear existing handlers
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    # Create formatter
+    formatter = logging.Formatter(log_format, datefmt='%Y-%m-%d %H:%M:%S')
+
+    # Console handler
+    ch = logging.StreamHandler()
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+    # File handler
+    if log_file:
+        ensure_dir_exists(Path(log_file).parent)
+        fh = logging.FileHandler(log_file, mode='a')
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+
     return logging.getLogger(__name__)
 
 

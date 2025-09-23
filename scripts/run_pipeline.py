@@ -19,35 +19,102 @@ from pathlib import Path
 # Add src to path
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
+import pandas as pd
+from src.utils import load_config, setup_logging
+from src.data import download_multiple_tickers, get_default_tickers, get_default_date_range
+from src.features import process_stock_features
+from src.models import train_models_multi_horizon
+from src.evaluate import evaluate_with_walk_forward
 
-def setup_logging():
-    """Setup logging configuration"""
-    pass
-
-
-def run_data_pipeline():
+def run_data_pipeline(config: dict):
     """Run data ingestion and processing"""
-    pass
+    logging.info("--- Running Data Pipeline ---")
+    tickers = get_default_tickers(config)
+    start_date, end_date = get_default_date_range(config)
+    raw_dir = config.get('data', {}).get('raw_data_dir', 'data/raw')
+
+    download_multiple_tickers(tickers, start_date, end_date, raw_dir)
+    logging.info("--- Data Pipeline Finished ---")
 
 
-def run_feature_engineering():
+def run_feature_engineering(config: dict):
     """Run feature engineering pipeline"""
-    pass
+    logging.info("--- Running Feature Engineering Pipeline ---")
+    tickers = get_default_tickers(config)
+    raw_dir = config.get('data', {}).get('raw_data_dir', 'data/raw')
+    processed_dir = config.get('features', {}).get('processed_dir', 'data/processed')
+    Path(processed_dir).mkdir(parents=True, exist_ok=True)
+
+    for ticker in tickers:
+        raw_path = Path(raw_dir) / f"{ticker}.csv"
+        if raw_path.exists():
+            features_df = process_stock_features(ticker, str(raw_path), config_path=config['config_path'])
+            features_df.to_csv(Path(processed_dir) / f"{ticker}_features.csv")
+    logging.info("--- Feature Engineering Pipeline Finished ---")
 
 
-def run_model_training():
+def run_model_training(config: dict):
     """Run model training pipeline"""
-    pass
+    logging.info("--- Running Model Training Pipeline ---")
+    tickers = get_default_tickers(config)
+    processed_dir = config.get('features', {}).get('processed_dir', 'data/processed')
+    models_dir = config.get('paths', {}).get('models_dir', 'experiments/models')
+    model_types = config.get('models', {}).get('types', ['rf'])
+    horizons = config.get('horizons', [1, 7, 14])
+
+    for ticker in tickers:
+        features_path = Path(processed_dir) / f"{ticker}_features.csv"
+        if not features_path.exists():
+            logging.warning(f"Feature file not found for {ticker}, skipping training.")
+            continue
+
+        logging.info(f"Training models for {ticker}...")
+        df_features = pd.read_csv(features_path, index_col=0, parse_dates=True)
+
+        # Define feature columns (exclude OHLC, Volume, and Targets)
+        exclude_cols = {"Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"}
+        feature_cols = [c for c in df_features.columns if not c.startswith("Target_") and c not in exclude_cols]
+
+        for model_type in model_types:
+            logging.info(f"  Training model type: {model_type}")
+            # train_models_multi_horizon handles training for all horizons
+            trained_records = train_models_multi_horizon(
+                df=df_features,
+                feature_columns=feature_cols,
+                horizons=horizons,
+                model_type=model_type,
+                save_dir=None,  # We will save manually to control filename
+                config_path=config['config_path']
+            )
+
+            # Save each trained model with the correct filename convention
+            for h, record in trained_records.items():
+                model_filename = f"{ticker}_{model_type}_h{h}_{pd.Timestamp.now():%Y%m%d}.joblib"
+                save_path = Path(models_dir) / model_filename
+                record.model.save_model(str(save_path))
+
+    logging.info("--- Model Training Pipeline Finished ---")
 
 
-def run_evaluation():
+def run_evaluation(config: dict):
     """Run model evaluation pipeline"""
-    pass
+    logging.info("--- Running Evaluation Pipeline ---")
+    # This is a complex step that depends on trained models.
+    # A full implementation would load models and run walk-forward validation.
+    # For now, we'll keep this as a placeholder to be expanded based on specific evaluation needs.
+    logging.warning(
+        "Evaluation pipeline is a placeholder. "
+        "Use notebooks or a dedicated evaluation script for detailed analysis."
+    )
+    logging.info("--- Evaluation Pipeline Finished ---")
 
 
-def run_complete_pipeline():
+def run_complete_pipeline(config: dict):
     """Run the complete pipeline"""
-    pass
+    run_data_pipeline(config)
+    run_feature_engineering(config)
+    run_model_training(config)
+    run_evaluation(config)
 
 
 def main():
@@ -79,8 +146,12 @@ def main():
 
     args = parser.parse_args()
 
+    # Load config
+    config = load_config(args.config)
+    config['config_path'] = args.config # Store path for later use
+
     # Setup logging
-    setup_logging()
+    setup_logging(config)
 
     # Log start of pipeline
     logging.info(f"Starting pipeline step: {args.step}")
@@ -88,15 +159,15 @@ def main():
 
     try:
         if args.step == "data":
-            run_data_pipeline()
+            run_data_pipeline(config)
         elif args.step == "features":
-            run_feature_engineering()
+            run_feature_engineering(config)
         elif args.step == "train":
-            run_model_training()
+            run_model_training(config)
         elif args.step == "evaluate":
-            run_evaluation()
+            run_evaluation(config)
         elif args.step == "all":
-            run_complete_pipeline()
+            run_complete_pipeline(config)
 
         logging.info(f"Pipeline step '{args.step}' completed successfully")
 

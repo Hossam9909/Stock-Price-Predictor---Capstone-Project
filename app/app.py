@@ -14,14 +14,14 @@ Author: Stock Price Prediction Project
 
 from src.evaluate import evaluate_regression_model, evaluate_trading_strategy
 from src.models import (
-    NaivePredictor,
-    RandomWalkPredictor,
-    RFPredictor,
+    NaiveLastValue,
+    RandomWalkDrift,
+    RandomForestPredictor,
     LGBMPredictor,
     XGBPredictor,
 )
-from src.features import create_features
-from src.data import load_raw_data, clean_data, load_config, validate_data_quality
+from src.features import create_all_features
+from src.data import load_raw_data, clean_data, validate_data_quality
 import os
 import sys
 import streamlit as st
@@ -35,6 +35,7 @@ sys.path.append(os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "src")))
 
 # Import project modules
+from src.utils import load_config
 
 
 # =============================
@@ -52,6 +53,15 @@ config = load_config("config/config.yaml")
 # =============================
 # HELPER FUNCTIONS
 # =============================
+
+MODEL_MAPPING = {
+    "naive": NaiveLastValue,
+    "random_walk": RandomWalkDrift,
+    "rf": RandomForestPredictor,
+    "lightgbm": LGBMPredictor,
+    "xgboost": XGBPredictor,
+}
+
 
 def load_trained_model(model_type: str, horizon: int, ticker: str):
     """Load a trained model from experiments/models/ directory."""
@@ -71,20 +81,11 @@ def load_trained_model(model_type: str, horizon: int, ticker: str):
     model_path = os.path.join(model_dir, model_files[0])
 
     try:
-        if model_type == "naive":
-            model = NaivePredictor(horizon=horizon)
-        elif model_type == "random_walk":
-            model = RandomWalkPredictor(horizon=horizon)
-        elif model_type == "rf":
-            model = RFPredictor(horizon=horizon)
-        elif model_type == "lightgbm":
-            model = LGBMPredictor(horizon=horizon)
-        elif model_type == "xgboost":
-            model = XGBPredictor(horizon=horizon)
-        else:
+        model_class = MODEL_MAPPING.get(model_type)
+        if not model_class:
             st.error(f"Unsupported model type: {model_type}")
             return None
-
+        model = model_class(horizon=horizon)
         model.load_model(model_path)
         return model
 
@@ -155,7 +156,7 @@ try:
         st.warning("⚠️ Potential data quality issues detected")
 
     # Create features
-    df_features = create_features(df_filtered)
+    df_features = create_all_features(df_filtered)
 
     # Load trained model
     model = load_trained_model(model_type, horizon, ticker)

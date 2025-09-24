@@ -6,12 +6,15 @@ and validating stock data from Yahoo Finance. It includes data cleaning,
 outlier detection, missing value handling, and various utility functions
 for financial data analysis.
 
+This is the FOUNDATION MODULE - all other modules import from this one.
+
 Usage:
     python src/data.py --tickers AAPL GOOGL --start 2020-01-01 --end 2023-12-31
 """
 
 import argparse
 import logging
+import logging.config
 import os
 from datetime import datetime, timedelta
 from typing import List, Optional, Union, Dict, Any
@@ -20,9 +23,90 @@ import warnings
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import yaml
 from scipy import stats
 
-from src.utils import load_config, setup_logging
+
+# =====================================
+# FOUNDATION FUNCTIONS (NO DEPENDENCIES)
+# =====================================
+
+def load_config(config_path: str = 'config/config.yaml') -> Dict[str, Any]:
+    """
+    Load configuration from YAML file.
+
+    Args:
+        config_path: Path to configuration file
+
+    Returns:
+        Dictionary containing configuration parameters
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist
+        yaml.YAMLError: If config file is invalid
+    """
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        return config
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    except yaml.YAMLError as e:
+        raise yaml.YAMLError(f"Invalid YAML in config file: {e}")
+
+
+def setup_logging(config: Optional[Dict[str, Any]] = None) -> logging.Logger:
+    """
+    Setup logging configuration.
+
+    Args:
+        config: Optional configuration dictionary. If None, loads from default config.
+
+    Returns:
+        Configured logger instance
+    """
+    try:
+        # Load logging configuration
+        logging_config_path = 'config/logging_config.yaml'
+
+        if os.path.exists(logging_config_path):
+            with open(logging_config_path, 'r', encoding='utf-8') as f:
+                logging_config = yaml.safe_load(f)
+
+            # Ensure log directory exists
+            log_dir = 'logs'
+            os.makedirs(log_dir, exist_ok=True)
+
+            # Apply logging configuration
+            logging.config.dictConfig(logging_config)
+        else:
+            # Fallback to basic configuration
+            log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            logging.basicConfig(
+                level=logging.INFO,
+                format=log_format,
+                handlers=[
+                    logging.StreamHandler(),
+                    logging.FileHandler('logs/pipeline.log', mode='a')
+                ]
+            )
+
+        # Get logger for this module
+        logger = logging.getLogger('data')
+        logger.info("Logging configuration initialized")
+
+        return logger
+
+    except Exception as e:
+        # Fallback to basic logging if config fails
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        logger = logging.getLogger('data')
+        logger.warning(
+            f"Failed to load logging config, using basic setup: {e}")
+        return logger
 
 
 def get_default_tickers(config: Dict[str, Any]) -> List[str]:
@@ -510,8 +594,7 @@ def main():
     # Parse config argument first to load defaults from it
     config_arg, other_args = parser.parse_known_args()
     config = load_config(config_arg.config)
-    setup_logging(config)
-    logger = logging.getLogger(__name__)
+    logger = setup_logging(config)
 
     default_tickers = get_default_tickers(config)
     default_start, default_end = get_default_date_range(config)
@@ -543,7 +626,8 @@ def main():
         help='Run data quality validation after download'
     )
     # Set defaults from config and then parse all arguments
-    parser.set_defaults(tickers=default_tickers, start=default_start, end=default_end)
+    parser.set_defaults(tickers=default_tickers,
+                        start=default_start, end=default_end)
     args = parser.parse_args()
 
     try:
@@ -567,7 +651,7 @@ def main():
                     try:
                         df = load_raw_data(file_path)
                         is_valid = validate_data_quality(df, detailed=False)
-                        status = "✅ VALID" if is_valid else "⚠️  ISSUES"
+                        status = "✅ VALID" if is_valid else "⚠️ ISSUES"
                         print(f"    Data quality: {status}")
                     except Exception as e:
                         print(f"    Validation failed: {e}")

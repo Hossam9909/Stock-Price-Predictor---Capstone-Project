@@ -52,6 +52,8 @@ except Exception:
 
 # Project imports (use existing functions)
 from src.data import (
+    load_config,
+    setup_logging,
     clean_data,
     validate_data_quality,
     calculate_returns,
@@ -70,7 +72,7 @@ from src.evaluate import (
 )
 
 # Import project utilities
-from src.utils import ensure_dir_exists, load_config, setup_logging
+from src.utils import ensure_dir_exists, save_results_to_json
 
 warnings.filterwarnings("ignore")
 logger = setup_logging()
@@ -240,7 +242,7 @@ class RandomForestPredictor(BasePredictor):
 
     def fit(self, X: pd.DataFrame, y: pd.Series, **fit_kwargs) -> "RandomForestPredictor":
         Xc, yc = self._prepare_fit_data(X, y)
-        self.feature_names = list(Xc.columns) # type: ignore
+        self.feature_names = list(Xc.columns)  # type: ignore
         self.model.fit(Xc.values, yc.values)
         self.is_fitted = True
         logger.info("Trained RandomForest")
@@ -270,7 +272,7 @@ class LightGBMPredictor(BasePredictor):
 
     def fit(self, X: pd.DataFrame, y: pd.Series, **fit_kwargs) -> "LightGBMPredictor":
         Xc, yc = self._prepare_fit_data(X, y)
-        self.feature_names = list(Xc.columns) # type: ignore
+        self.feature_names = list(Xc.columns)  # type: ignore
         self.model.fit(Xc.values, yc.values, eval_set=[
                        (Xc.values, yc.values)], verbose=False)
         self.is_fitted = True
@@ -296,7 +298,7 @@ class XGBPredictor(BasePredictor):
 
     def fit(self, X: pd.DataFrame, y: pd.Series, **fit_kwargs) -> "XGBPredictor":
         Xc, yc = self._prepare_fit_data(X, y)
-        self.feature_names = list(Xc.columns) # type: ignore
+        self.feature_names = list(Xc.columns)  # type: ignore
         self.model.fit(Xc.values, yc.values, eval_set=[
                        (Xc.values, yc.values)], verbose=False)
         self.is_fitted = True

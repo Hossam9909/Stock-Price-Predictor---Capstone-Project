@@ -23,15 +23,15 @@ import pandas as pd
 from src.utils import load_config, setup_logging
 from src.data import download_multiple_tickers, get_default_tickers, get_default_date_range
 from src.features import process_stock_features
-from src.models import train_models_multi_horizon
-from src.evaluate import evaluate_with_walk_forward
+from src.models import train_models_multi_horizon, evaluate_with_walk_forward
+from src.evaluate import create_evaluation_report, plot_validation_results
 
 def run_data_pipeline(config: dict):
     """Run data ingestion and processing"""
     logging.info("--- Running Data Pipeline ---")
     tickers = get_default_tickers(config)
     start_date, end_date = get_default_date_range(config)
-    raw_dir = config.get('data', {}).get('raw_data_dir', 'data/raw')
+    raw_dir = config.get('paths', {}).get('data_raw', 'data/raw')
 
     download_multiple_tickers(tickers, start_date, end_date, raw_dir)
     logging.info("--- Data Pipeline Finished ---")
@@ -41,8 +41,8 @@ def run_feature_engineering(config: dict):
     """Run feature engineering pipeline"""
     logging.info("--- Running Feature Engineering Pipeline ---")
     tickers = get_default_tickers(config)
-    raw_dir = config.get('data', {}).get('raw_data_dir', 'data/raw')
-    processed_dir = config.get('features', {}).get('processed_dir', 'data/processed')
+    raw_dir = config.get('paths', {}).get('data_raw', 'data/raw')
+    processed_dir = config.get('paths', {}).get('data_processed', 'data/processed')
     Path(processed_dir).mkdir(parents=True, exist_ok=True)
 
     for ticker in tickers:
@@ -57,7 +57,7 @@ def run_model_training(config: dict):
     """Run model training pipeline"""
     logging.info("--- Running Model Training Pipeline ---")
     tickers = get_default_tickers(config)
-    processed_dir = config.get('features', {}).get('processed_dir', 'data/processed')
+    processed_dir = config.get('paths', {}).get('data_processed', 'data/processed')
     models_dir = config.get('paths', {}).get('models_dir', 'experiments/models')
     model_types = config.get('models', {}).get('types', ['rf'])
     horizons = config.get('horizons', [1, 7, 14])
@@ -97,15 +97,60 @@ def run_model_training(config: dict):
 
 
 def run_evaluation(config: dict):
-    """Run model evaluation pipeline"""
+    """Run model evaluation pipeline using walk-forward validation."""
     logging.info("--- Running Evaluation Pipeline ---")
-    # This is a complex step that depends on trained models.
-    # A full implementation would load models and run walk-forward validation.
-    # For now, we'll keep this as a placeholder to be expanded based on specific evaluation needs.
-    logging.warning(
-        "Evaluation pipeline is a placeholder. "
-        "Use notebooks or a dedicated evaluation script for detailed analysis."
-    )
+    tickers = get_default_tickers(config)
+    processed_dir = config.get('paths', {}).get('data_processed', 'data/processed')
+    results_dir = config.get('paths', {}).get('results_dir', 'experiments/results')
+    figures_dir = config.get('paths', {}).get('figures_dir', 'experiments/figures')
+    model_types = config.get('models', {}).get('types', ['rf'])
+    horizons = config.get('horizons', [1, 7, 14])
+
+    # Ensure output directories exist
+    Path(results_dir).mkdir(parents=True, exist_ok=True)
+    Path(figures_dir).mkdir(parents=True, exist_ok=True)
+
+    for ticker in tickers:
+        features_path = Path(processed_dir) / f"{ticker}_features.csv"
+        if not features_path.exists():
+            logging.warning(f"Feature file not found for {ticker}, skipping evaluation.")
+            continue
+
+        logging.info(f"Evaluating models for {ticker}...")
+        df_features = pd.read_csv(features_path, index_col=0, parse_dates=True)
+
+        # Define feature columns
+        exclude_cols = {"Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"}
+        feature_cols = [c for c in df_features.columns if not c.startswith("Target_") and c not in exclude_cols]
+
+        for model_type in model_types:
+            logging.info(f"  Evaluating model type: {model_type}")
+
+            validation_results = evaluate_with_walk_forward(
+                df=df_features,
+                feature_columns=feature_cols,
+                horizons=horizons,
+                model_type=model_type,
+                config_path=config['config_path']
+            )
+
+            report_path = Path(results_dir) / f"{ticker}_{model_type}_summary_report.txt"
+            create_evaluation_report(
+                model_name=f"{ticker} - {model_type}",
+                validation_results=validation_results,
+                save_path=str(report_path)
+            )
+
+            for h, res in validation_results.items():
+                if "predictions_df" in res:
+                    fig_path = Path(figures_dir) / f"{ticker}_{model_type}_h{h}_validation_plot.png"
+                    plot_validation_results(
+                        validation_results=res,
+                        title=f"Validation: {ticker} - {model_type} - {h}-day Horizon",
+                        save_path=str(fig_path),
+                        show=False
+                    )
+
     logging.info("--- Evaluation Pipeline Finished ---")
 
 

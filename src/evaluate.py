@@ -19,8 +19,8 @@ import matplotlib.pyplot as plt
 import warnings
 
 # Import project utilities
-from src.data import load_raw_data
-from src.utils import load_config, setup_logging, plot_predictions_vs_actual, plot_error_distribution
+from src.data import load_config, setup_logging, load_raw_data
+from src.utils import plot_predictions_vs_actual, plot_error_distribution
 
 warnings.filterwarnings("ignore")
 

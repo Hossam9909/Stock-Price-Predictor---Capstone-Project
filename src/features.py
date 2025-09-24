@@ -9,11 +9,12 @@ Dependencies: src.data (existing module)
 """
 
 from src.data import (
+    load_config,
+    setup_logging,
     calculate_returns,
     clean_data,
     load_raw_data,
 )
-from src.utils import load_config, setup_logging
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional, Tuple, Any
@@ -515,15 +516,18 @@ def process_stock_features(
 # =============================================================================
 
 
-def validate_features(df: pd.DataFrame) -> bool:
+def validate_features(df: pd.DataFrame, strict: bool = False) -> bool:
     """
-    Validate the feature DataFrame for NaNs, Infs, and constant columns.
+    Validate the feature DataFrame for data quality issues.
 
     This function checks for common data quality issues in a feature set that can
-    cause problems during model training.
+    cause problems during model training. It's designed to be tolerant of expected
+    NaN values from rolling window calculations while catching genuine data issues.
 
     Args:
         df (pd.DataFrame): The DataFrame with features to validate.
+        strict (bool): If True, fails on ANY NaN values. If False, allows 
+                      reasonable NaN values from rolling calculations.
 
     Returns:
         bool: True if validation passes, False otherwise.
@@ -532,11 +536,35 @@ def validate_features(df: pd.DataFrame) -> bool:
     logger.info("--- Starting Feature Validation ---")
 
     # Check for NaN values
-    if df.isnull().sum().sum() > 0:
+    total_nans = df.isnull().sum().sum()
+    if total_nans > 0:
         nan_counts = df.isnull().sum()
-        logger.warning(
-            f"NaN values found! Columns with NaNs:\n{nan_counts[nan_counts > 0]}")
-        is_valid = False
+        nan_columns = nan_counts[nan_counts > 0]
+        
+        if strict:
+            # Strict mode: fail on any NaN values
+            logger.warning(f"NaN values found! Columns with NaNs:\n{nan_columns}")
+            is_valid = False
+        else:
+            # Tolerant mode: analyze NaN patterns
+            total_cells = df.shape[0] * df.shape[1]
+            nan_ratio = total_nans / total_cells
+            
+            # Check if NaNs are concentrated in expected locations (early rows)
+            expected_nan_patterns = _analyze_nan_patterns(df, nan_columns)
+            
+            if nan_ratio > 0.3:  # More than 30% NaN is problematic
+                logger.warning(f"Excessive NaN values: {nan_ratio:.2%} of all data")
+                logger.warning(f"Columns with NaNs:\n{nan_columns}")
+                is_valid = False
+            elif not expected_nan_patterns['is_expected']:
+                logger.warning("Unexpected NaN patterns detected:")
+                logger.warning(f"Columns with NaNs:\n{nan_columns}")
+                logger.warning("NaNs appear to be scattered rather than concentrated in early rows")
+                is_valid = False
+            else:
+                logger.info(f"✅ Expected NaN pattern detected ({nan_ratio:.2%} of data)")
+                logger.info(f"NaN values from rolling windows: {expected_nan_patterns['rolling_window_nans']}")
     else:
         logger.info("✅ No NaN values found.")
 
@@ -544,18 +572,132 @@ def validate_features(df: pd.DataFrame) -> bool:
     numeric_df = df.select_dtypes(include=np.number)
     if np.isinf(numeric_df).sum().sum() > 0:
         inf_counts = np.isinf(numeric_df).sum()
-        logger.warning(
-            f"Infinite values found! Columns with Infs:\n{inf_counts[inf_counts > 0]}")
+        logger.warning(f"Infinite values found! Columns with Infs:\n{inf_counts[inf_counts > 0]}")
         is_valid = False
     else:
         logger.info("✅ No infinite values found.")
 
+    # Check for constant features (can cause issues in modeling)
+    constant_features = []
+    for col in numeric_df.columns:
+        if numeric_df[col].nunique() <= 1:
+            constant_features.append(col)
+    
+    if constant_features:
+        logger.warning(f"Constant features found: {constant_features}")
+        # Don't fail validation for this, just warn
+        logger.info("Note: Constant features should be removed before modeling")
+
     if is_valid:
         logger.info("--- Feature validation successful ---")
+        logger.info(f"Dataset shape: {df.shape}")
+        logger.info(f"Clean rows available: {df.dropna().shape[0]}")
     else:
         logger.error("--- Feature validation failed ---")
 
     return is_valid
+
+
+def _analyze_nan_patterns(df: pd.DataFrame, nan_columns: pd.Series) -> Dict[str, Any]:
+    """
+    Analyze NaN patterns to determine if they're expected from rolling calculations.
+    
+    Args:
+        df: DataFrame to analyze
+        nan_columns: Series with NaN counts per column
+        
+    Returns:
+        Dict with pattern analysis results
+    """
+    analysis = {
+        'is_expected': True,
+        'rolling_window_nans': 0,
+        'scattered_nans': 0,
+        'problematic_columns': []
+    }
+    
+    for col, nan_count in nan_columns.items():
+        col_data = df[col]
+        
+        # Check if NaNs are concentrated at the beginning (expected for rolling windows)
+        first_valid_idx = col_data.first_valid_index()
+        
+        if first_valid_idx is not None:
+            first_valid_pos = df.index.get_loc(first_valid_idx)
+            
+            # For rolling windows, we expect NaNs only in the first N rows
+            expected_rolling_nans = first_valid_pos
+            
+            # Check if actual NaN count matches expected rolling window NaNs
+            if nan_count <= expected_rolling_nans + 5:  # Allow small buffer
+                analysis['rolling_window_nans'] += nan_count
+            else:
+                # More NaNs than expected from rolling windows
+                analysis['scattered_nans'] += (nan_count - expected_rolling_nans)
+                analysis['problematic_columns'].append(col)
+                
+                # Check if NaNs are scattered throughout (bad) vs concentrated (acceptable)
+                nan_positions = col_data.isnull()
+                if nan_positions.iloc[expected_rolling_nans:].any():
+                    analysis['is_expected'] = False
+        else:
+            # Entire column is NaN - definitely problematic
+            analysis['is_expected'] = False
+            analysis['problematic_columns'].append(col)
+    
+    return analysis
+
+
+def validate_features_after_cleaning(df: pd.DataFrame) -> bool:
+    """
+    Validate features after NaN removal - should pass strict validation.
+    
+    Args:
+        df: DataFrame with features (should be clean)
+        
+    Returns:
+        bool: True if validation passes
+    """
+    return validate_features(df, strict=True)
+
+
+def get_feature_validation_report(df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Get detailed feature validation report without failing.
+    
+    Args:
+        df: DataFrame to analyze
+        
+    Returns:
+        Dict with comprehensive validation metrics
+    """
+    report = {
+        'total_features': len(df.columns),
+        'total_rows': len(df),
+        'clean_rows': len(df.dropna()),
+        'data_retention': len(df.dropna()) / len(df) if len(df) > 0 else 0,
+        'missing_values': df.isnull().sum().to_dict(),
+        'infinite_values': {},
+        'constant_features': [],
+        'validation_passed': False
+    }
+    
+    # Check infinite values
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    for col in numeric_cols:
+        inf_count = np.isinf(df[col]).sum()
+        if inf_count > 0:
+            report['infinite_values'][col] = int(inf_count)
+    
+    # Check constant features
+    for col in numeric_cols:
+        if df[col].nunique() <= 1:
+            report['constant_features'].append(col)
+    
+    # Overall validation
+    report['validation_passed'] = validate_features(df, strict=False)
+    
+    return report
 
 
 def get_feature_importance_groups(df: pd.DataFrame) -> Dict[str, List[str]]:

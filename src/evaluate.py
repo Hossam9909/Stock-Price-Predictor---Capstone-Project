@@ -21,6 +21,7 @@ import warnings
 # Import project utilities
 from src.data import load_config, setup_logging, load_raw_data
 from src.utils import plot_predictions_vs_actual, plot_error_distribution
+from src.features import prepare_features_and_targets
 
 warnings.filterwarnings("ignore")
 
@@ -196,7 +197,8 @@ def calculate_max_drawdown(returns: np.ndarray) -> float:
 
 def evaluate_regression_model(y_true: np.ndarray,
                               y_pred: np.ndarray,
-                              model_name: str = "Model") -> Dict[str, float]:
+                              model_name: str = "Model"
+) -> Dict[str, float]:
     """
     Evaluate a single model's predictions with a variety of metrics.
     Supports price-level inputs or returns. The caller should pass appropriate arrays.
@@ -862,3 +864,28 @@ def run_comprehensive_validation(data: pd.DataFrame,
 
     logger.info("Comprehensive validation pipeline completed")
     return results
+
+# -----------------------------------------------------------------------------
+# BASELINE MODEL EVALUATOR
+# -----------------------------------------------------------------------------
+
+
+class BaselineModelEvaluator:
+    """Evaluator for baseline models across multiple horizons."""
+
+    def __init__(self, horizons: List[int]):
+        self.horizons = horizons
+        self.results: Dict[str, List[Dict]] = {}
+
+    def evaluate_single_model(
+        self, model: Any, X_test: np.ndarray, y_test: np.ndarray, model_name: str, horizon: int
+    ):
+        """Evaluate a model on a single horizon and return metrics + predictions."""
+        from src.evaluate import evaluate_regression_model
+
+        y_pred = model.predict(X_test)
+        metrics = evaluate_regression_model(y_test, y_pred, model_name=f"{model_name}_{horizon}d")
+        metrics["horizon"] = f"{horizon}d"
+        metrics["n_predictions"] = len(y_test)
+        self.results.setdefault(model_name, []).append(metrics)
+        return metrics, y_pred

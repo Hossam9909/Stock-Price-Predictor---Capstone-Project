@@ -202,7 +202,7 @@ class NaiveLastValue(BasePredictor):
 class RandomWalkDrift(BasePredictor):
     """Random walk with estimated drift from historical returns."""
 
-    def fit(self, X: pd.DataFrame, y: pd.Series, price_col: str = "Adj Close", **kwargs) -> "RandomWalkDrift":
+    def fit(self, X: pd.DataFrame, y: pd.Series, price_col: str = "Adj Close", horizon: int = 1, **kwargs) -> "RandomWalkDrift":
         # compute returns from price column in X or y (prefer X if contains price)
         source = X[price_col] if price_col in X.columns else y
         returns = calculate_returns(pd.Series(source))
@@ -213,6 +213,7 @@ class RandomWalkDrift(BasePredictor):
         if y_nonnull.empty:
             raise ValueError("No non-null targets to fit RandomWalkDrift")
         self.last_value = float(y_nonnull.iloc[-1])
+        self.horizon = horizon
         self.is_fitted = True
         logger.info(f"Fitted RandomWalkDrift with drift={self.drift:.6f}")
         return self

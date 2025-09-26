@@ -1,5 +1,4 @@
-"""
-Feature Engineering Module - USES existing data.py functions
+"""Feature Engineering Module - USES existing data.py functions
 
 This module provides feature engineering capabilities for stock price data.
 It imports and uses existing data.py functions for data loading and configuration.
@@ -25,6 +24,38 @@ warnings.filterwarnings("ignore")
 
 # Setup logging from existing data module
 logger = setup_logging()
+
+# =============================================================================
+# FEATURE/TARGET PREPARATION
+# =============================================================================
+
+
+def prepare_features_and_targets(df: pd.DataFrame, horizon: int):
+    """
+    Prepare feature matrix X and target vector y for given horizon.
+
+    Args:
+        df (pd.DataFrame): DataFrame with features and target columns
+        horizon (int): Forecast horizon in days (e.g., 1, 7, 14)
+
+    Returns:
+        Tuple[X, y, feature_cols]
+    """
+    target_col = f"Target_{horizon}d"
+    if target_col not in df.columns:
+        raise ValueError(f"Target column {target_col} not found in data")
+
+    exclude_cols = [c for c in df.columns if c.startswith("Target_")]
+    exclude_cols.extend(["Open", "High", "Low", "Close", "Volume"])
+
+    feature_cols = [c for c in df.columns if c not in exclude_cols]
+
+    X = df[feature_cols].copy()
+    y = df[target_col].copy()
+
+    mask = ~(X.isnull().any(axis=1) | y.isnull())
+    return X[mask], y[mask], feature_cols
+
 
 # =============================================================================
 # TECHNICAL INDICATORS
@@ -346,7 +377,9 @@ def create_volume_features(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 
 
-def create_targets(df: pd.DataFrame, horizons: List[int] = [1, 7, 14, 28]) -> pd.DataFrame:
+def create_targets(
+    df: pd.DataFrame, horizons: List[int] = [1, 7, 14, 28]
+) -> pd.DataFrame:
     """
     Create target variables for forecasting.
 

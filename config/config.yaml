@@ -1,0 +1,183 @@
+# =====================================
+# Stock Price Predictor Configuration
+# =====================================
+
+project:
+  name: "stock_price_prediction"
+  version: "1.0.0"
+  random_seed: 42
+
+# =====================================
+# Data Configuration
+# =====================================
+data:
+  tickers:
+    - "AAPL"
+    - "GOOGL"
+    - "MSFT"
+    - "TSLA"
+    - "AMZN"
+
+  date_range:
+    start_date: "2020-01-01"
+    end_date: null   # null means current date
+
+  
+  return_method: "log"   # "simple" or "log"
+  date_column: "Date"
+  
+  # More flexible column configuration
+  target_column: "Close"  # Primary target (yfinance usually has this)
+  target_column_alternatives:    # Fallback options
+    - "Adj Close"
+    - "close"
+    - "adjusted_close"
+  
+  # Column mapping for different data sources
+  column_mapping:
+    date: ["Date", "date", "timestamp", "Timestamp"]
+    open: ["Open", "open"]
+    high: ["High", "high"]
+    low: ["Low", "low"]
+    close: ["Close", "close", "Adj Close", "adj_close"]
+    volume: ["Volume", "volume", "Volume"]
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+
+# =====================================
+# Prediction horizons (days)
+# =====================================
+horizons: [1, 7, 14, 28]
+
+
+# =====================================
+# Feature Engineering
+# =====================================
+features:
+  technical_indicators:
+    sma_periods: [5, 10, 20, 50, 200]
+    ema_periods: [12, 26]
+    rsi_window: 14
+    macd:
+      fast: 12
+      slow: 26
+      signal: 9
+    bollinger:
+      window: 20
+      std_dev: 2
+    atr_window: 14
+    stochastic:
+      k_window: 14
+      d_window: 3
+    williams_r_window: 14
+
+  lag_features:
+    lags: [1, 2, 3, 5, 10]
+
+  rolling_features:
+    windows: [5, 10, 20]
+    statistics: ["mean", "std", "min", "max"]
+
+  return_periods: [1, 5, 10, 20]
+  target_horizons: [1, 7, 14, 28]
+
+  scaling:
+    method: "standard"   # options: "standard", "minmax", "robust"
+    apply: true
+
+# =====================================
+# Models
+# =====================================
+models:
+  types:
+    - "naive"
+    - "random_walk"
+    - "rf"
+    - "lightgbm"
+    - "xgboost"
+  baseline:
+    naive_last_value: {}
+    random_forest:
+      n_estimators: 200
+      max_depth: 10
+      min_samples_split: 5
+      min_samples_leaf: 2
+      n_jobs: -1
+      random_state: 42
+
+  advanced:
+    lightgbm:
+      objective: "regression"
+      metric: "rmse"
+      boosting_type: "gbdt"
+      num_leaves: 31
+      learning_rate: 0.05
+      feature_fraction: 0.9
+      bagging_fraction: 0.8
+      bagging_freq: 5
+      n_estimators: 500
+      verbose: -1
+      random_state: 42
+
+    xgboost:
+      objective: "reg:squarederror"
+      max_depth: 6
+      learning_rate: 0.1
+      n_estimators: 500
+      subsample: 0.8
+      colsample_bytree: 0.8
+      random_state: 42
+      n_jobs: -1
+
+  deep_learning:
+    lstm:
+      enabled: false
+      sequence_length: 60
+      hidden_units: 64
+      dropout_rate: 0.2
+      epochs: 100
+      batch_size: 32
+      learning_rate: 0.001
+      optimizer: "adam"
+      loss: "mse"
+
+# =====================================
+# Evaluation
+# =====================================
+evaluation:
+  metrics: ["RMSE", "MAE", "MAPE", "directional_accuracy", "hit_rate"]
+  hit_rate_tolerance: 0.05   # ±5% threshold
+  walk_forward:
+    initial_train_size: 0.7
+    step_size: 30
+    max_train_size: null
+  cross_validation:
+    n_splits: 5
+    max_train_size: null
+
+# =====================================
+# Visualization
+# =====================================
+visualization:
+  style: "seaborn-v0_8"
+  figsize: [12, 8]
+  save_plots: true
+  plot_formats: ["png", "pdf"]
+  
+
+# =====================================
+# Paths (Single Source of Truth)
+# =====================================
+paths:
+  data_raw: "data/raw"
+  data_processed: "data/processed"
+  data_external: "data/external"
+  models_dir: "experiments/models"
+  results_dir: "experiments/results"
+  figures_dir: "experiments/figures"
+  reports_dir: "report/"
+  logs_dir: "logs"
+  log_file: "logs/pipeline.log"

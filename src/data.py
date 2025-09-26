@@ -19,7 +19,7 @@ import os
 from datetime import datetime, timedelta
 from typing import List, Optional, Union, Dict, Any
 import warnings
-
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -31,7 +31,7 @@ from scipy import stats
 # FOUNDATION FUNCTIONS (NO DEPENDENCIES)
 # =====================================
 
-def load_config(config_path: str = 'config/config.yaml') -> Dict[str, Any]:
+def load_config(config_path: str = "config/config.yaml") -> Dict[str, Any]:
     """
     Load configuration from YAML file.
 
@@ -46,7 +46,12 @@ def load_config(config_path: str = 'config/config.yaml') -> Dict[str, Any]:
         yaml.YAMLError: If config file is invalid
     """
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
+        if not os.path.exists(config_path):
+            # fallback: assume script is in src/
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            config_path = os.path.join(project_root, "config", "config.yaml")
+
+        with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
         return config
     except FileNotFoundError:
@@ -66,46 +71,48 @@ def setup_logging(config: Optional[Dict[str, Any]] = None) -> logging.Logger:
         Configured logger instance
     """
     try:
-        # Load logging configuration
-        logging_config_path = 'config/logging_config.yaml'
+        # Project root (one level above this file's directory)
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        log_dir = os.path.join(project_root, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Path to logging config
+        logging_config_path = os.path.join(project_root, "config", "logging_config.yaml")
 
         if os.path.exists(logging_config_path):
-            with open(logging_config_path, 'r', encoding='utf-8') as f:
+            with open(logging_config_path, "r", encoding="utf-8") as f:
                 logging_config = yaml.safe_load(f)
 
-            # Ensure log directory exists
-            log_dir = 'logs'
-            os.makedirs(log_dir, exist_ok=True)
+            # Ensure log file paths in config point to the correct directory
+            for handler in logging_config.get("handlers", {}).values():
+                if "filename" in handler:
+                    handler["filename"] = os.path.join(log_dir, os.path.basename(handler["filename"]))
 
-            # Apply logging configuration
             logging.config.dictConfig(logging_config)
         else:
-            # Fallback to basic configuration
-            log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            # Fallback: write to root logs/pipeline.log
+            log_file = os.path.join(log_dir, "pipeline.log")
+            log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
             logging.basicConfig(
                 level=logging.INFO,
                 format=log_format,
                 handlers=[
                     logging.StreamHandler(),
-                    logging.FileHandler('logs/pipeline.log', mode='a')
+                    logging.FileHandler(log_file, mode="a")
                 ]
             )
 
-        # Get logger for this module
-        logger = logging.getLogger('data')
+        logger = logging.getLogger("data")
         logger.info("Logging configuration initialized")
-
         return logger
 
     except Exception as e:
-        # Fallback to basic logging if config fails
         logging.basicConfig(
             level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
+            format="%(asctime)s - %(levelname)s - %(message)s"
         )
-        logger = logging.getLogger('data')
-        logger.warning(
-            f"Failed to load logging config, using basic setup: {e}")
+        logger = logging.getLogger("data")
+        logger.warning(f"Failed to load logging config, using basic setup: {e}")
         return logger
 
 
@@ -149,7 +156,9 @@ def validate_date_format(date_str: Optional[str]) -> bool:
         return False
 
 
-def download_ticker(ticker: str, start: str, end: str, out_dir: str = 'data/raw') -> Optional[str]:
+def download_ticker(
+    ticker: str, start: str, end: str, out_dir: str = "data/raw"
+) -> Optional[str]:
     """
     Download stock data for a single ticker and save to CSV.
 
@@ -166,9 +175,8 @@ def download_ticker(ticker: str, start: str, end: str, out_dir: str = 'data/raw'
 
     try:
         # Validate inputs
-        if not validate_date_format(start) or not validate_date_format(end):
-            logger.error(
-                f"Invalid date format for {ticker}. Use YYYY-MM-DD format.")
+        if not (validate_date_format(start) and validate_date_format(end)):
+            logger.error(f"Invalid date format for {ticker}. Use YYYY-MM-DD format.")
             return None
 
         logger.info(f"Downloading data for {ticker} from {start} to {end}")
@@ -192,8 +200,7 @@ def download_ticker(ticker: str, start: str, end: str, out_dir: str = 'data/raw'
         # yfinance sometimes returns MultiIndex columns for single tickers
         if isinstance(df.columns, pd.MultiIndex):
             # If MultiIndex, flatten it and take the first level
-            df.columns = df.columns.droplevel(
-                1) if df.columns.nlevels > 1 else df.columns
+            df.columns = df.columns.droplevel(1) if df.columns.nlevels > 1 else df.columns
 
         # Define the columns we want to keep, in order of preference
         desired_columns = ['Open', 'High', 'Low',
@@ -209,8 +216,7 @@ def download_ticker(ticker: str, start: str, end: str, out_dir: str = 'data/raw'
 
         # If we don't have Adj Close, use Close
         if 'Adj Close' not in available_columns and 'Close' in available_columns:
-            logger.warning(
-                f"Using 'Close' instead of 'Adj Close' for {ticker}")
+            logger.warning(f"Using 'Close' instead of 'Adj Close' for {ticker}")
             df['Adj Close'] = df['Close']
             available_columns.append('Adj Close')
 
@@ -244,8 +250,9 @@ def download_ticker(ticker: str, start: str, end: str, out_dir: str = 'data/raw'
         return None
 
 
-def download_multiple_tickers(tickers: List[str], start: str, end: str,
-                              out_dir: str = 'data/raw') -> List[Optional[str]]:
+def download_multiple_tickers(
+    tickers: List[str], start: str, end: str, out_dir: str = "data/raw"
+) -> List[Optional[str]]:
     """
     Download stock data for multiple tickers.
 
@@ -270,11 +277,10 @@ def download_multiple_tickers(tickers: List[str], start: str, end: str,
     successful_count = sum(1 for r in results if r is not None)
     logger.info(
         f"Successfully downloaded {successful_count}/{len(tickers)} tickers")
-
     return results
 
 
-def save_raw_data(df: pd.DataFrame, ticker: str, out_dir: str = 'data/raw') -> str:
+def save_raw_data(df: pd.DataFrame, ticker: str, out_dir: str = "data/raw") -> str:
     """
     Save DataFrame to CSV file.
 
@@ -311,10 +317,20 @@ def load_raw_data(filepath: str) -> pd.DataFrame:
     Raises:
         FileNotFoundError: If file doesn't exist
     """
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"File not found: {filepath}")
+    try:
+        # If running as a script (__file__ exists)
+        project_root = Path(__file__).resolve().parents[1]
+    except NameError:
+        # If running inside Jupyter (__file__ is not defined)
+        cwd = Path.cwd()
+        project_root = cwd.parent if cwd.name == "notebooks" else cwd
 
-    df = pd.read_csv(filepath, index_col=0, parse_dates=True)
+    file_path = project_root / filepath
+
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    df = pd.read_csv(file_path, index_col=0, parse_dates=True)
 
     # Ensure consistent index naming
     df.index.name = "Date"
@@ -382,7 +398,9 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     return df_clean
 
 
-def detect_outliers(series: pd.Series, method: str = 'iqr', threshold: float = 3.0) -> pd.Series:
+def detect_outliers(
+    series: pd.Series, method: str = "iqr", threshold: float = 3.0
+) -> pd.Series:
     """
     Detect outliers in a pandas Series.
 
@@ -410,7 +428,9 @@ def detect_outliers(series: pd.Series, method: str = 'iqr', threshold: float = 3
         raise ValueError("Method must be 'iqr' or 'zscore'")
 
 
-def handle_missing_data(df: pd.DataFrame, method: str = 'forward_fill') -> pd.DataFrame:
+def handle_missing_data(
+    df: pd.DataFrame, method: str = "forward_fill"
+) -> pd.DataFrame:
     """
     Handle missing data using various imputation methods.
 
@@ -439,7 +459,9 @@ def handle_missing_data(df: pd.DataFrame, method: str = 'forward_fill') -> pd.Da
     return df_imputed
 
 
-def validate_data_quality(df: pd.DataFrame, detailed: bool = False) -> Union[bool, Dict[str, Any]]:
+def validate_data_quality(
+    df: pd.DataFrame, detailed: bool = False
+) -> Union[bool, Dict[str, Any]]:
     """
     Validate data quality with comprehensive checks.
 
@@ -559,7 +581,7 @@ def align_timestamps(dataframes: List[pd.DataFrame]) -> List[pd.DataFrame]:
     return aligned_dfs
 
 
-def calculate_returns(prices: pd.Series, method: str = 'simple') -> pd.Series:
+def calculate_returns(prices: pd.Series, method: str = "simple") -> pd.Series:
     """
     Calculate financial returns from price series.
 
@@ -587,9 +609,7 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        '--config',
-        default='config/config.yaml',
-        help='Path to configuration file'
+        "--config", default="config/config.yaml", help="Path to configuration file"
     )
     # Parse config argument first to load defaults from it
     config_arg, other_args = parser.parse_known_args()
@@ -600,30 +620,22 @@ def main():
     default_start, default_end = get_default_date_range(config)
 
     parser.add_argument(
-        '--tickers',
-        nargs='+',
+        "--tickers",
+        nargs="+",
         default=default_tickers,
-        help=f'Stock ticker symbols (default: {default_tickers})'
+        help=f"Stock ticker symbols (default: {default_tickers})",
     )
     parser.add_argument(
-        '--start',
+        "--start",
         default=default_start,
-        help=f'Start date in YYYY-MM-DD format (default: {default_start})'
+        help=f"Start date in YYYY-MM-DD format (default: {default_start})",
     )
     parser.add_argument(
-        '--end',
-        default=default_end,
-        help=f'End date in YYYY-MM-DD format (default: {default_end})'
+        "--end", default=default_end, help=f"End date in YYYY-MM-DD format (default: {default_end})"
     )
+    parser.add_argument("--out", default="data/raw", help="Output directory for CSV files")
     parser.add_argument(
-        '--out',
-        default='data/raw',
-        help='Output directory for CSV files'
-    )
-    parser.add_argument(
-        '--validate',
-        action='store_true',
-        help='Run data quality validation after download'
+        "--validate", action="store_true", help="Run data quality validation after download"
     )
     # Set defaults from config and then parse all arguments
     parser.set_defaults(tickers=default_tickers,
